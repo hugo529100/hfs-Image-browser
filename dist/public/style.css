@@ -1,13 +1,15 @@
 /* ============================================
    Picasa-style Image Browser - Thumbnail Strip
-   v21:
+   v26:
    - Rebuild on orientation change
    - File info row (size · created · modified),
      wider spacing on desktop
-   - Collapse tab
+   - Collapse tab (state persisted in localStorage)
+   - No height transition on collapse (avoids flash on mobile)
    - No per-thumbnail index badge
    - Configurable mobile thumbnail height
    - Removed entry-comment placeholder
+   - Dark theme: plugin text uses var(--text)
    ============================================ */
 
 /* ============================================================
@@ -44,8 +46,8 @@
     user-select: none;
     touch-action: pan-y;
     -webkit-overflow-scrolling: touch;
-    transition: height 0.22s ease, min-height 0.22s ease,
-                opacity 0.22s ease;
+    /* Only fade; no height transition → no flash when collapsed */
+    transition: opacity 0.22s ease;
 }
 
 /* Collapsed: only a small tab at bottom-left */
@@ -179,13 +181,6 @@
                 0 4px 18px color-mix(in srgb, var(--good-contrast, #4a9eff) 40%, transparent);
 }
 
-@supports not (color: color-mix(in srgb, red 50%, blue)) {
-    .ib-thumb.ib-active .ib-thumb-frame {
-        box-shadow: 0 0 0 1px rgba(170, 170, 170, 0.33),
-                    0 4px 18px rgba(170, 170, 170, 0.4);
-    }
-}
-
 /* ============================================================
    Thumbnail filename
    ============================================================ */
@@ -235,7 +230,6 @@
     color: rgba(255, 255, 255, 0.62);
     padding: 2px 8px;
     pointer-events: none;
-    opacity: 0.92;
     max-width: 80%;
     white-space: nowrap;
     overflow: hidden;
@@ -258,7 +252,6 @@
     color: rgba(255, 255, 255, 0.55);
     padding: 2px 8px;
     pointer-events: none;
-    opacity: 0.9;
     white-space: nowrap;
     flex: 0 0 auto;
 }
@@ -282,6 +275,7 @@
     line-height: 1;
     user-select: none;
     -webkit-tap-highlight-color: transparent;
+    opacity: 0.8;
 }
 
 .ib-collapse-tab:hover {
@@ -390,4 +384,38 @@
 :fullscreen .ib-strip-container,
 :-webkit-full-screen .ib-strip-container {
     background: var(--bg, rgba(0, 0, 0, 0.9));
+}
+
+/* ============================================================
+   Dark theme overrides: use var(--text) for all plugin text
+   ============================================================ */
+body.theme-dark .ib-thumb-name,
+body.theme-dark .ib-file-info,
+body.theme-dark .ib-counter,
+body.theme-dark .ib-collapse-tab {
+    color: var(--text, #eaeaea);
+}
+
+body.theme-dark .ib-thumb-name {
+    color: color-mix(in srgb, var(--text, #eaeaea) 75%, transparent);
+}
+
+body.theme-dark .ib-thumb.ib-active .ib-thumb-name {
+    color: var(--text, #eaeaea);
+}
+
+body.theme-dark .ib-file-info {
+    color: color-mix(in srgb, var(--text, #eaeaea) 75%, transparent);
+}
+
+body.theme-dark .ib-counter {
+    color: color-mix(in srgb, var(--text, #eaeaea) 70%, transparent);
+}
+
+body.theme-dark .ib-collapse-tab {
+    color: color-mix(in srgb, var(--text, #eaeaea) 80%, transparent);
+}
+
+body.theme-dark .ib-collapse-tab:hover {
+    color: var(--text, #eaeaea);
 }

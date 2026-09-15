@@ -1,4 +1,21 @@
 'use strict';
+// ============================================================
+// Image Browser Plugin - Picasa-style bottom thumbnail strip
+// v26:
+//   - Rebuild strip on orientation change (portrait/landscape).
+//   - File info row (size · created · modified) from get_file_list.
+//   - Collapse tab in the top-left corner to hide/show the strip.
+//     Collapse state persisted in localStorage (default: expanded).
+//     applyCollapseState() runs synchronously BEFORE updateActive()
+//     in mount() so the first paint already reflects the preference
+//     and there is no visible flash on mobile.
+//   - No height transition on collapse (avoids flash on first open).
+//   - Removed per-thumbnail index badge.
+//   - Added mobileThumbnailSize config for mobile thumbnail height.
+//   - Desktop file-info spacing widened.
+//   - Removed entry-comment placeholder.
+//   - All comments translated to English.
+// ============================================================
 (function () {
     const BUILTIN = {
         enableWheelSwitch: true,
@@ -29,6 +46,23 @@
         // Collapse tab
         collapseTabSize: 22,
     };
+
+    // localStorage key for collapse state (default: expanded / false)
+    const COLLAPSE_KEY = 'ib.collapsed';
+
+    function loadCollapseState() {
+        try {
+            return localStorage.getItem(COLLAPSE_KEY) === '1';
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function saveCollapseState(collapsed) {
+        try {
+            localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0');
+        } catch (e) { }
+    }
 
     let C = {
         thumbnailSize: 80,
@@ -519,11 +553,11 @@
                 ? formatDate(meta.mtime) : '—';
 
             state.fileInfoEl.innerHTML =
-                `<span class="ib-meta">📦 ${sizeText}</span>` +
+                `<span class="ib-meta">Ⓢ\uFE0E ${sizeText}</span>` +
                 `<span class="ib-meta-gap"></span>` +
-                `<span class="ib-meta">📅 ${cText}</span>` +
+                `<span class="ib-meta">Ⓒ\uFE0E ${cText}</span>` +
                 `<span class="ib-meta-gap"></span>` +
-                `<span class="ib-meta">✏️ ${mText}</span>`;
+                `<span class="ib-meta">Ⓜ\uFE0E ${mText}</span>`;
 
             state.fileInfoEl.title =
                 img.name + '\n' +
@@ -570,9 +604,13 @@
         const arrow = strip.querySelector('.ib-collapse-arrow');
         if (arrow) arrow.textContent = state.collapsed ? '▲' : '▼';
 
-        requestAnimationFrame(() => {
-            if (state.currentIndex >= 0) updateActive(state.currentIndex, false);
-        });
+        saveCollapseState(state.collapsed);
+
+        // In collapsed mode, the track is hidden; no need to reposition.
+        // In expanded mode, re-center the current item.
+        if (!state.collapsed && state.currentIndex >= 0) {
+            updateActive(state.currentIndex, false);
+        }
     }
 
     function buildStrip() {
@@ -1098,17 +1136,22 @@
                 main.style.paddingBottom = '0';
             }
 
+            // Restore collapse preference before building the strip
+            state.collapsed = loadCollapseState();
+
             const strip = buildStrip();
             contain.appendChild(strip);
             mounted = true;
 
             state.mountedAt = Date.now();
-            state.collapsed = false;
 
             const size = getEffectiveThumbSize();
             state.lastSizeKey = `${size.h}x${size.gap}`;
             state.lastOrientationKey = getOrientationKey();
 
+            // Apply collapse state first so the first paint already
+            // reflects the user's preference (avoids a visible flash).
+            applyCollapseState();
             updateActive(idx, false);
 
             if (BUILTIN.enableKeyboardNav) {
@@ -1133,7 +1176,8 @@
         state.counterEl = null;
         state.fileInfoEl = null;
         state.collapseTabEl = null;
-        state.collapsed = false;
+        // Keep state.collapsed so the user preference persists across
+        // unmount / remount cycles.
         state.thumbEls.clear();
         state.winStart = 0;
         state.winEnd = 0;
