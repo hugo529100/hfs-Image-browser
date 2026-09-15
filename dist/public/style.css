@@ -39,7 +39,7 @@
     height: calc(var(--ib-thumb-h) + 42px);
     min-height: calc(var(--ib-thumb-h) + 40px);
     flex: 0 0 auto;
-    background: rgba(0, 0, 0, 0.8);
+    background: rgba(0, 0, 0, 0.95);
     backdrop-filter: blur(4px);
     overflow: hidden;
     position: relative;
