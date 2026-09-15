@@ -1,9 +1,11 @@
 /* ============================================
    Picasa-style Image Browser - Thumbnail Strip
-   v26:
+   v28:
+   - File info row: size · created · modified ·
+     resolution · aspect ratio · megapixels
+   - Resolution/ratio/MP hidden on portrait phones
    - Rebuild on orientation change
-   - File info row (size · created · modified),
-     wider spacing on desktop
+   - Wider spacing on desktop
    - Collapse tab (state persisted in localStorage)
    - No height transition on collapse (avoids flash on mobile)
    - No per-thumbnail index badge
@@ -241,7 +243,7 @@
     display: inline-block;
 }
 
-/* Desktop: wider spacing between the three meta items */
+/* Desktop: wider spacing between the meta items */
 .ib-file-info .ib-meta-gap {
     display: inline-block;
     width: 18px;
@@ -349,9 +351,9 @@
         max-width: 88%;
     }
 
-    /* Mobile: tighter spacing between the three meta items */
+    /* Mobile: tighter spacing between the meta items */
     .ib-file-info .ib-meta-gap {
-        width: 8px;
+        width: 6px;
     }
 
     .ib-counter {
@@ -375,6 +377,17 @@
         width: 20px;
         height: 20px;
         font-size: 9px;
+    }
+}
+
+/* ============================================================
+   Hide resolution / aspect ratio / megapixels
+   on portrait phones
+   ============================================================ */
+@media (max-width: 640px) and (orientation: portrait) {
+    .ib-file-info .ib-meta-res,
+    .ib-file-info .ib-meta-gap-res {
+        display: none;
     }
 }
 

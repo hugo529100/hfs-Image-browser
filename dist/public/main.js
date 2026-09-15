@@ -1,7 +1,14 @@
 'use strict';
 // ============================================================
 // Image Browser Plugin - Picasa-style bottom thumbnail strip
-// v26:
+// v28:
+//   - File info row now shows: size, created, modified,
+//     resolution (Ⓡ), aspect ratio (Ⓐ), megapixels (Ⓟ).
+//     Resolution / ratio / MP all come from the same decoded
+//     image, so they cost zero extra network requests and share
+//     one cache entry in metaCache.
+//   - Aspect ratio and megapixels are hidden together with the
+//     resolution on portrait phones via the ib-meta-res class.
 //   - Rebuild strip on orientation change (portrait/landscape).
 //   - File info row (size · created · modified) from get_file_list.
 //   - Collapse tab in the top-left corner to hide/show the strip.
@@ -140,6 +147,37 @@
             return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
                    `${pad(d.getHours())}:${pad(d.getMinutes())}`;
         } catch (e) { return ''; }
+    }
+
+    // Reduce w:h to the smallest integer ratio (e.g. 1920×1080 → 16:9).
+    // Falls back to a familiar ratio or a decimal ratio when the GCD
+    // reduction produces an impractical result (odd sensor sizes).
+    function formatAspectRatio(w, h) {
+        if (!w || !h) return '';
+        const gcd = (a, b) => b ? gcd(b, a % b) : a;
+        const g = gcd(w, h);
+        let rw = w / g;
+        let rh = h / g;
+        // Avoid absurd reduced ratios (e.g. 1001:1000 from odd sensor sizes):
+        // if either side exceeds 30, fall back to a rounded decimal ratio.
+        if (rw > 30 || rh > 30) {
+            const dec = w / h;
+            const KNOWN = [
+                [1, 1], [4, 3], [3, 2], [16, 9], [16, 10], [21, 9], [5, 4], [7, 5],
+            ];
+            for (const [kw, kh] of KNOWN) {
+                if (Math.abs(dec - kw / kh) < 0.01) return `${kw}:${kh}`;
+            }
+            return dec.toFixed(2) + ':1';
+        }
+        return `${rw}:${rh}`;
+    }
+
+    // Format megapixels: 2073600 → "2.1 MP"
+    function formatMegapixels(mp) {
+        if (mp === null || mp === undefined || isNaN(mp) || mp <= 0) return '';
+        if (mp >= 10) return mp.toFixed(1) + ' MP';
+        return mp.toFixed(2) + ' MP';
     }
 
     const WINDOW_CFG = {
@@ -496,8 +534,10 @@
     }
 
     // ============================================================
-    // File info (size · creation time · modification time)
+    // File info (size · created · modified · resolution · ratio · MP)
     // Data comes from get_file_list: s=size, c=ctime, m=mtime
+    // Resolution / aspect ratio / megapixels are resolved by loading
+    // the original image and are cached inside metaCache under 'res'.
     // ============================================================
     async function fetchFileMeta(img) {
         if (!img) return null;
@@ -534,6 +574,40 @@
         return meta;
     }
 
+    // Resolve natural resolution, aspect ratio and megapixels of the
+    // original image. Result is cached on the meta object under 'res':
+    //   { w, h, ratio, mp } → resolved
+    //   null                → failed to load
+    //   undefined           → not yet resolved
+    function resolveResolution(img, meta) {
+        return new Promise(resolve => {
+            if (!img) { resolve(null); return; }
+            if (meta && meta.res !== undefined) { resolve(meta.res); return; }
+
+            const im = new Image();
+            im.decoding = 'async';
+            im.onload = () => {
+                const w = im.naturalWidth;
+                const h = im.naturalHeight;
+                const res = {
+                    w,
+                    h,
+                    ratio: formatAspectRatio(w, h),
+                    mp: (w && h) ? (w * h) / 1e6 : null,
+                };
+                if (meta) meta.res = res;
+                state.metaCache.set(img.url, meta);
+                resolve(res);
+            };
+            im.onerror = () => {
+                if (meta) meta.res = null;
+                state.metaCache.set(img.url, meta);
+                resolve(null);
+            };
+            im.src = img.url;
+        });
+    }
+
     function updateFileInfo(index) {
         if (!state.fileInfoEl) return;
         const img = state.images[index];
@@ -542,7 +616,7 @@
             return;
         }
 
-        const apply = (meta) => {
+        const apply = (meta, res) => {
             if (!state.fileInfoEl) return;
 
             const sizeText = (meta && meta.size != null)
@@ -551,27 +625,59 @@
                 ? formatDate(meta.ctime) : '—';
             const mText = (meta && meta.mtime)
                 ? formatDate(meta.mtime) : '—';
+            const resText = (res && res.w && res.h)
+                ? `${res.w}×${res.h}` : '—';
+            const ratioText = (res && res.ratio) ? res.ratio : '—';
+            const mpText = formatMegapixels(res && res.mp) || '—';
 
             state.fileInfoEl.innerHTML =
                 `<span class="ib-meta">Ⓢ\uFE0E ${sizeText}</span>` +
                 `<span class="ib-meta-gap"></span>` +
                 `<span class="ib-meta">Ⓒ\uFE0E ${cText}</span>` +
                 `<span class="ib-meta-gap"></span>` +
-                `<span class="ib-meta">Ⓜ\uFE0E ${mText}</span>`;
+                `<span class="ib-meta">Ⓜ\uFE0E ${mText}</span>` +
+                `<span class="ib-meta-gap ib-meta-gap-res"></span>` +
+                `<span class="ib-meta ib-meta-res">Ⓡ\uFE0E ${resText}</span>` +
+                `<span class="ib-meta-gap ib-meta-gap-res"></span>` +
+                `<span class="ib-meta ib-meta-res">Ⓐ\uFE0E ${ratioText}</span>` +
+                `<span class="ib-meta-gap ib-meta-gap-res"></span>` +
+                `<span class="ib-meta ib-meta-res">Ⓟ\uFE0E ${mpText}</span>`;
 
             state.fileInfoEl.title =
                 img.name + '\n' +
                 `Size: ${sizeText}\n` +
                 `Created: ${cText}\n` +
-                `Modified: ${mText}`;
+                `Modified: ${mText}\n` +
+                `Resolution: ${resText}\n` +
+                `Aspect: ${ratioText}\n` +
+                `Megapixels: ${mpText}`;
         };
 
         const cached = state.metaCache.get(img.url);
         if (cached) {
-            apply(cached);
+            if (cached.res !== undefined) {
+                // Both meta and resolution already known.
+                apply(cached, cached.res);
+            } else {
+                // Render meta first; resolution will fill in when ready.
+                apply(cached, null);
+                resolveResolution(img, cached).then(r => {
+                    // Only re-render if the viewer is still on this image.
+                    if (state.images[state.currentIndex] === img) {
+                        apply(cached, r);
+                    }
+                });
+            }
         } else {
             state.fileInfoEl.innerHTML = '';
-            fetchFileMeta(img).then(apply).catch(() => { });
+            fetchFileMeta(img).then(meta => {
+                apply(meta, null);
+                return resolveResolution(img, meta).then(r => {
+                    if (state.images[state.currentIndex] === img) {
+                        apply(meta, r);
+                    }
+                });
+            }).catch(() => { });
         }
     }
 
