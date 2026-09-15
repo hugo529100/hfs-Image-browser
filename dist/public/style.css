@@ -1,0 +1,393 @@
+/* ============================================
+   Picasa-style Image Browser - Thumbnail Strip
+   v21:
+   - Rebuild on orientation change
+   - File info row (size · created · modified),
+     wider spacing on desktop
+   - Collapse tab
+   - No per-thumbnail index badge
+   - Configurable mobile thumbnail height
+   - Removed entry-comment placeholder
+   ============================================ */
+
+/* ============================================================
+   Root variables (injected by main.js; fallback defaults)
+   ============================================================ */
+:root {
+    --ib-thumb-h: 80px;
+    --ib-thumb-w: 106px;
+    --ib-thumb-gap: 8px;
+    --ib-item-w: 114px;
+    --ib-transition: 250ms;
+    --ib-fade-out: 400ms;
+    --ib-fade-in: 500ms;
+    --ib-track-fade: 200ms;
+    --ib-tab-size: 22px;
+}
+
+/* ============================================================
+   Strip container
+   ============================================================ */
+.ib-strip-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: calc(var(--ib-thumb-h) + 42px);
+    min-height: calc(var(--ib-thumb-h) + 40px);
+    flex: 0 0 auto;
+    background: rgba(0, 0, 0, 0.8);
+    backdrop-filter: blur(4px);
+    overflow: hidden;
+    position: relative;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    z-index: 50;
+    user-select: none;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+    transition: height 0.22s ease, min-height 0.22s ease,
+                opacity 0.22s ease;
+}
+
+/* Collapsed: only a small tab at bottom-left */
+.ib-strip-container.ib-collapsed {
+    height: var(--ib-tab-size);
+    min-height: var(--ib-tab-size);
+    background: rgb(0 0 0);
+    backdrop-filter: none;
+    border-top: none;
+    pointer-events: none;
+}
+
+.ib-strip-container.ib-collapsed .ib-strip-track,
+.ib-strip-container.ib-collapsed .ib-bar {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.ib-strip-container.ib-collapsed .ib-collapse-tab {
+    pointer-events: auto;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(4px);
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+.ib-strip-container.ib-hidden {
+    opacity: 0;
+    transform: translateY(100%);
+    pointer-events: none;
+}
+
+/* ============================================================
+   Thumbnail track
+   ============================================================ */
+.ib-strip-track {
+    display: flex;
+    align-items: center;
+    gap: var(--ib-thumb-gap);
+    padding: 0;
+    will-change: transform, opacity;
+    position: absolute;
+    left: 0;
+    top: 58%;
+    transform: translateY(-50%);
+    transition: transform var(--ib-transition) cubic-bezier(0.25, 0.1, 0.25, 1),
+                opacity var(--ib-track-fade) ease-out;
+}
+
+.ib-strip-track.ib-no-transition {
+    transition: none !important;
+}
+
+/* ============================================================
+   Pads
+   ============================================================ */
+.ib-pad-left,
+.ib-pad-right {
+    flex: 0 0 auto;
+    height: 1px;
+    pointer-events: none;
+}
+
+/* ============================================================
+   Thumbnail cell
+   ============================================================ */
+.ib-thumb {
+    flex: 0 0 auto;
+    width: var(--ib-thumb-w);
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    cursor: pointer;
+    opacity: 0.55;
+    transform: scale(0.94);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.ib-thumb.ib-active {
+    opacity: 1;
+    transform: scale(1.04);
+}
+
+.ib-thumb.ib-near {
+    opacity: 0.85;
+    transform: scale(0.98);
+}
+
+.ib-thumb img {
+    display: block;
+    pointer-events: none;
+    background: #2a2a2a;
+}
+
+/* ============================================================
+   Thumbnail frame
+   ============================================================ */
+.ib-thumb-frame {
+    width: var(--ib-thumb-w);
+    height: var(--ib-thumb-h);
+    border-radius: 6px;
+    overflow: hidden;
+    background: #1a1a1a;
+    border: 2px solid transparent;
+    box-sizing: border-box;
+    position: relative;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.ib-thumb-frame img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    pointer-events: none;
+    background: #2a2a2a;
+    transition: background 0.3s ease;
+}
+
+.ib-thumb-frame img.ib-loaded {
+    background: transparent;
+}
+
+/* ============================================================
+   Active border
+   ============================================================ */
+.ib-thumb.ib-active .ib-thumb-frame {
+    border-color: var(--good-contrast, #4a9eff);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--good-contrast, #4a9eff) 33%, transparent),
+                0 4px 18px color-mix(in srgb, var(--good-contrast, #4a9eff) 40%, transparent);
+}
+
+@supports not (color: color-mix(in srgb, red 50%, blue)) {
+    .ib-thumb.ib-active .ib-thumb-frame {
+        box-shadow: 0 0 0 1px rgba(170, 170, 170, 0.33),
+                    0 4px 18px rgba(170, 170, 170, 0.4);
+    }
+}
+
+/* ============================================================
+   Thumbnail filename
+   ============================================================ */
+.ib-thumb-name {
+    margin-top: 4px;
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.75);
+    text-align: center;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: var(--ib-thumb-w);
+    transition: color 0.2s ease;
+    padding: 0 2px;
+    box-sizing: border-box;
+    font-weight: 400;
+}
+
+.ib-thumb.ib-active .ib-thumb-name {
+    color: #fff;
+    font-weight: 600;
+}
+
+/* ============================================================
+   Bottom info bar: file info on the left, counter on the right
+   ============================================================ */
+.ib-bar {
+    position: absolute;
+    top: 4px;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 4px 0 40px; /* leave room for collapse tab */
+    pointer-events: none;
+    z-index: 2;
+    gap: 8px;
+    transition: opacity 0.2s ease;
+}
+
+.ib-file-info {
+    display: flex;
+    align-items: center;
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.62);
+    padding: 2px 8px;
+    pointer-events: none;
+    opacity: 0.92;
+    max-width: 80%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: 0.3px;
+}
+
+.ib-file-info .ib-meta {
+    display: inline-block;
+}
+
+/* Desktop: wider spacing between the three meta items */
+.ib-file-info .ib-meta-gap {
+    display: inline-block;
+    width: 18px;
+}
+
+.ib-counter {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.55);
+    padding: 2px 8px;
+    pointer-events: none;
+    opacity: 0.9;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+/* ============================================================
+   Collapse tab (small button in top-left)
+   ============================================================ */
+.ib-collapse-tab {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    width: 20px;
+    height: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 5;
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 10px;
+    line-height: 1;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.ib-collapse-tab:hover {
+    color: #fff;
+}
+
+.ib-collapse-arrow {
+    display: inline-block;
+    transform: translateY(-1px);
+    pointer-events: none;
+}
+
+/* When collapsed, the tab sticks to bottom-left */
+.ib-strip-container.ib-collapsed .ib-collapse-tab {
+    top: auto;
+    bottom: 4px;
+    left: 6px;
+}
+
+/* ============================================================
+   Main image fade
+   ============================================================ */
+.file-show img.showing {
+    transition: opacity var(--ib-fade-in, 500ms) ease-in-out;
+    will-change: opacity;
+    backface-visibility: hidden;
+}
+
+.file-show img.showing.ib-fading {
+    transition: opacity var(--ib-fade-out, 400ms) ease-in-out;
+    opacity: 0;
+}
+
+/* ============================================================
+   .file-show layout
+   ============================================================ */
+.file-show .contain {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+.file-show .main {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+    position: relative;
+    padding-bottom: 0;
+}
+
+.file-show .nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+/* ============================================================
+   Mobile
+   ============================================================ */
+@media (max-width: 30em) {
+    #root .file-show > .contain {
+        flex-direction: column !important;
+    }
+}
+
+@media (max-width: 640px) {
+    .ib-file-info {
+        font-size: 10px;
+        padding: 1px 6px;
+        max-width: 88%;
+    }
+
+    /* Mobile: tighter spacing between the three meta items */
+    .ib-file-info .ib-meta-gap {
+        width: 8px;
+    }
+
+    .ib-counter {
+        font-size: 10px;
+        padding: 1px 6px;
+    }
+
+    .ib-thumb-name {
+        font-size: 9px;
+        margin-top: 2px;
+    }
+
+    .ib-bar {
+        top: 4px;
+        padding-left: 24px;
+    }
+
+    .ib-collapse-tab {
+        top: 4px;
+        left: 6px;
+        width: 20px;
+        height: 20px;
+        font-size: 9px;
+    }
+}
+
+/* ============================================================
+   Fullscreen
+   ============================================================ */
+:fullscreen .ib-strip-container,
+:-webkit-full-screen .ib-strip-container {
+    background: var(--bg, rgba(0, 0, 0, 0.9));
+}
