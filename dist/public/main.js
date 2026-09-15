@@ -1,34 +1,10 @@
 'use strict';
-// ============================================================
-// Image Browser Plugin - Picasa-style bottom thumbnail strip
-// v28:
-//   - File info row now shows: size, created, modified,
-//     resolution (Ⓡ), aspect ratio (Ⓐ), megapixels (Ⓟ).
-//     Resolution / ratio / MP all come from the same decoded
-//     image, so they cost zero extra network requests and share
-//     one cache entry in metaCache.
-//   - Aspect ratio and megapixels are hidden together with the
-//     resolution on portrait phones via the ib-meta-res class.
-//   - Rebuild strip on orientation change (portrait/landscape).
-//   - File info row (size · created · modified) from get_file_list.
-//   - Collapse tab in the top-left corner to hide/show the strip.
-//     Collapse state persisted in localStorage (default: expanded).
-//     applyCollapseState() runs synchronously BEFORE updateActive()
-//     in mount() so the first paint already reflects the preference
-//     and there is no visible flash on mobile.
-//   - No height transition on collapse (avoids flash on first open).
-//   - Removed per-thumbnail index badge.
-//   - Added mobileThumbnailSize config for mobile thumbnail height.
-//   - Desktop file-info spacing widened.
-//   - Removed entry-comment placeholder.
-//   - All comments translated to English.
-// ============================================================
 (function () {
     const BUILTIN = {
         enableWheelSwitch: true,
         wheelDebounceMs: 120,
         maxWheelStep: 5,
-        maxTouchStep: 8,
+        maxTouchStep: 5,
         enableKeyboardNav: true,
         enableClickToSelect: true,
         enableDirectJump: true,
@@ -50,11 +26,11 @@
         mountDelayMs: 60,
         coldStartMs: 500,
 
-        // Collapse tab
         collapseTabSize: 22,
     };
 
-    // localStorage key for collapse state (default: expanded / false)
+    const DRAG_SWITCH_MIN_INTERVAL_MS = 60;
+
     const COLLAPSE_KEY = 'ib.collapsed';
 
     function loadCollapseState() {
@@ -149,17 +125,12 @@
         } catch (e) { return ''; }
     }
 
-    // Reduce w:h to the smallest integer ratio (e.g. 1920×1080 → 16:9).
-    // Falls back to a familiar ratio or a decimal ratio when the GCD
-    // reduction produces an impractical result (odd sensor sizes).
     function formatAspectRatio(w, h) {
         if (!w || !h) return '';
         const gcd = (a, b) => b ? gcd(b, a % b) : a;
         const g = gcd(w, h);
         let rw = w / g;
         let rh = h / g;
-        // Avoid absurd reduced ratios (e.g. 1001:1000 from odd sensor sizes):
-        // if either side exceeds 30, fall back to a rounded decimal ratio.
         if (rw > 30 || rh > 30) {
             const dec = w / h;
             const KNOWN = [
@@ -173,7 +144,6 @@
         return `${rw}:${rh}`;
     }
 
-    // Format megapixels: 2073600 → "2.1 MP"
     function formatMegapixels(mp) {
         if (mp === null || mp === undefined || isNaN(mp) || mp <= 0) return '';
         if (mp >= 10) return mp.toFixed(1) + ' MP';
@@ -196,6 +166,7 @@
         counterEl: null,
         fileInfoEl: null,
         collapseTabEl: null,
+        selectorEl: null,
         collapsed: false,
         lastWheelTime: 0,
         preloadCache: new Map(),
@@ -487,7 +458,7 @@
             if (BUILTIN.enableInterruptOnNavigate) interruptMainImage();
             btn.click();
             if (i % 5 === 4) await new Promise(r => setTimeout(r, 0));
-            else await new Promise(r => setTimeout(r, 8));
+            else await new Promise(r => setTimeout(r, 6));
         }
     }
 
@@ -533,12 +504,6 @@
         navigateTo(t);
     }
 
-    // ============================================================
-    // File info (size · created · modified · resolution · ratio · MP)
-    // Data comes from get_file_list: s=size, c=ctime, m=mtime
-    // Resolution / aspect ratio / megapixels are resolved by loading
-    // the original image and are cached inside metaCache under 'res'.
-    // ============================================================
     async function fetchFileMeta(img) {
         if (!img) return null;
         const key = img.url;
@@ -550,7 +515,6 @@
             mtime: (img.mtime !== undefined && img.mtime !== null) ? img.mtime : null,
         };
 
-        // Fallback to HEAD only if list is missing fields (size / mtime)
         if (meta.size === null || meta.mtime === null) {
             try {
                 const res = await fetch(img.url, {
@@ -574,11 +538,6 @@
         return meta;
     }
 
-    // Resolve natural resolution, aspect ratio and megapixels of the
-    // original image. Result is cached on the meta object under 'res':
-    //   { w, h, ratio, mp } → resolved
-    //   null                → failed to load
-    //   undefined           → not yet resolved
     function resolveResolution(img, meta) {
         return new Promise(resolve => {
             if (!img) { resolve(null); return; }
@@ -656,13 +615,10 @@
         const cached = state.metaCache.get(img.url);
         if (cached) {
             if (cached.res !== undefined) {
-                // Both meta and resolution already known.
                 apply(cached, cached.res);
             } else {
-                // Render meta first; resolution will fill in when ready.
                 apply(cached, null);
                 resolveResolution(img, cached).then(r => {
-                    // Only re-render if the viewer is still on this image.
                     if (state.images[state.currentIndex] === img) {
                         apply(cached, r);
                     }
@@ -681,9 +637,6 @@
         }
     }
 
-    // ============================================================
-    // Collapse tab
-    // ============================================================
     function buildCollapseTab() {
         const tab = document.createElement('div');
         tab.className = 'ib-collapse-tab';
@@ -712,10 +665,8 @@
 
         saveCollapseState(state.collapsed);
 
-        // In collapsed mode, the track is hidden; no need to reposition.
-        // In expanded mode, re-center the current item.
         if (!state.collapsed && state.currentIndex >= 0) {
-            updateActive(state.currentIndex, false);
+            centerOnIndex(state.currentIndex, false);
         }
     }
 
@@ -726,6 +677,10 @@
         const track = document.createElement('div');
         track.className = 'ib-strip-track';
         strip.appendChild(track);
+
+        const selector = document.createElement('div');
+        selector.className = 'ib-selector';
+        strip.appendChild(selector);
 
         const bar = document.createElement('div');
         bar.className = 'ib-bar';
@@ -745,6 +700,7 @@
 
         state.stripEl = strip;
         state.trackEl = track;
+        state.selectorEl = selector;
         state.counterEl = counter;
         state.fileInfoEl = fileInfo;
         state.collapseTabEl = tab;
@@ -1003,6 +959,31 @@
     let updatingActive = false;
     let pendingIndex = null;
 
+    function centerOnIndex(index, animated = true) {
+        if (!state.trackEl || !state.stripEl) return;
+        const size = getEffectiveThumbSize();
+        const thumbH = size.h;
+        const thumbW = Math.round(thumbH * 1.33);
+        const gap = size.gap;
+        const itemW = thumbW + gap;
+
+        const containerW = state.stripEl.clientWidth;
+        const center = containerW / 2;
+        const targetCenter = index * itemW + thumbW / 2;
+        const translateX = center - targetCenter;
+
+        if (!animated) {
+            state.trackEl.style.transition = 'none';
+            state.trackEl.style.transform = `translateY(-50%) translateX(${translateX}px)`;
+            requestAnimationFrame(() => {
+                if (state.trackEl) state.trackEl.style.transition = '';
+            });
+        } else {
+            state.trackEl.style.transition = '';
+            state.trackEl.style.transform = `translateY(-50%) translateX(${translateX}px)`;
+        }
+    }
+
     function updateActive(index, animated = true) {
         if (index < 0 || index >= state.images.length) return;
         if (updatingActive) { pendingIndex = index; return; }
@@ -1011,12 +992,6 @@
         try {
             state.currentIndex = index;
             extendWindow(index);
-
-            const size = getEffectiveThumbSize();
-            const thumbH = size.h;
-            const thumbW = Math.round(thumbH * 1.33);
-            const gap = size.gap;
-            const itemW = thumbW + gap;
 
             state.thumbEls.forEach((cell, cellIdx) => {
                 const active = cellIdx === index;
@@ -1035,23 +1010,7 @@
             }
             state.lastRenderIndex = index;
 
-            if (state.trackEl && state.stripEl) {
-                const containerW = state.stripEl.clientWidth;
-                const center = containerW / 2;
-                const targetCenter = index * itemW + thumbW / 2;
-                const translateX = center - targetCenter;
-
-                if (!animated) {
-                    state.trackEl.style.transition = 'none';
-                    state.trackEl.style.transform = `translateY(-50%) translateX(${translateX}px)`;
-                    requestAnimationFrame(() => {
-                        if (state.trackEl) state.trackEl.style.transition = '';
-                    });
-                } else {
-                    state.trackEl.style.transition = '';
-                    state.trackEl.style.transform = `translateY(-50%) translateX(${translateX}px)`;
-                }
-            }
+            centerOnIndex(index, animated);
 
             if (state.counterEl) {
                 state.counterEl.textContent = `${index + 1} / ${state.images.length}`;
@@ -1069,6 +1028,25 @@
                 pendingIndex = null;
             }
         }
+    }
+
+    function findThumbIndexAtPoint(clientX) {
+        if (!state.stripEl) return -1;
+        const rect = state.stripEl.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+
+        let bestIdx = -1;
+        let bestDist = Infinity;
+        state.thumbEls.forEach((cell, idx) => {
+            const r = cell.getBoundingClientRect();
+            const cx = r.left + r.width / 2;
+            const d = Math.abs(cx - centerX);
+            if (d < bestDist) {
+                bestDist = d;
+                bestIdx = idx;
+            }
+        });
+        return bestIdx;
     }
 
     function onWheel(e) {
@@ -1111,6 +1089,7 @@
         let isDragging = false;
         let dragStartTranslateX = 0;
         let currentTranslateX = 0;
+        let lastSwitchTime = 0;
 
         function getCurrentTranslateX() {
             if (!state.trackEl) return 0;
@@ -1129,6 +1108,7 @@
             isDragging = false;
             dragStartTranslateX = getCurrentTranslateX();
             currentTranslateX = dragStartTranslateX;
+            lastSwitchTime = 0;
             if (state.trackEl) state.trackEl.style.transition = 'none';
         }
 
@@ -1148,32 +1128,21 @@
             currentTranslateX = dragStartTranslateX + dx;
             state.trackEl.style.transform =
                 `translateY(-50%) translateX(${currentTranslateX}px)`;
+
+            const now = Date.now();
+            if ((now - lastSwitchTime) >= DRAG_SWITCH_MIN_INTERVAL_MS) {
+                const idx = findThumbIndexAtPoint(t.clientX);
+                if (idx >= 0 && idx !== state.currentIndex) {
+                    navigateTo(idx);
+                    lastSwitchTime = now;
+                }
+            }
         }
 
         function onTouchEnd() {
             if (!isDragging) return;
-            const dx = currentTranslateX - dragStartTranslateX;
-            const dt = Date.now() - touchStartTime;
-            const velocity = Math.abs(dx) / Math.max(dt, 1);
-
-            const size = getEffectiveThumbSize();
-            const itemW = (size.h * 1.33) + size.gap;
-            let steps = 0;
-            if (Math.abs(dx) > 50 || velocity > 0.5) {
-                steps = Math.round(-dx / itemW);
-                if (steps === 0) steps = dx > 0 ? -1 : 1;
-            }
-            steps = Math.max(-BUILTIN.maxTouchStep, Math.min(+BUILTIN.maxTouchStep, steps));
-
-            const newIndex = Math.max(0, Math.min(
-                state.images.length - 1,
-                state.currentIndex + steps
-            ));
-
-            if (newIndex !== state.currentIndex) navigateTo(newIndex);
-            else updateActive(state.currentIndex, true);
-
             isDragging = false;
+            updateActive(state.currentIndex, true);
         }
 
         strip.addEventListener('touchstart', onTouchStart, { passive: true });
@@ -1201,6 +1170,7 @@
             healThumbnails();
             const idx = findCurrentIndex();
             if (idx >= 0 && idx !== state.currentIndex) updateActive(idx, true);
+            else centerOnIndex(state.currentIndex, true);
             return;
         }
 
@@ -1242,7 +1212,6 @@
                 main.style.paddingBottom = '0';
             }
 
-            // Restore collapse preference before building the strip
             state.collapsed = loadCollapseState();
 
             const strip = buildStrip();
@@ -1255,8 +1224,6 @@
             state.lastSizeKey = `${size.h}x${size.gap}`;
             state.lastOrientationKey = getOrientationKey();
 
-            // Apply collapse state first so the first paint already
-            // reflects the user's preference (avoids a visible flash).
             applyCollapseState();
             updateActive(idx, false);
 
@@ -1282,8 +1249,7 @@
         state.counterEl = null;
         state.fileInfoEl = null;
         state.collapseTabEl = null;
-        // Keep state.collapsed so the user preference persists across
-        // unmount / remount cycles.
+        state.selectorEl = null;
         state.thumbEls.clear();
         state.winStart = 0;
         state.winEnd = 0;
@@ -1303,9 +1269,6 @@
         window.removeEventListener('orientationchange', onResize);
     }
 
-    // ============================================================
-    // Size / orientation change
-    // ============================================================
     function getOrientationKey() {
         const w = window.innerWidth;
         const h = window.innerHeight;
@@ -1321,7 +1284,6 @@
         const sizeKey = `${size.h}x${size.gap}`;
         const orientKey = getOrientationKey();
 
-        // Orientation or key size change → rebuild completely
         if (state.lastSizeKey !== sizeKey || state.lastOrientationKey !== orientKey) {
             state.lastSizeKey = sizeKey;
             state.lastOrientationKey = orientKey;
@@ -1344,7 +1306,7 @@
         }
 
         if (state.currentIndex >= 0) {
-            updateActive(state.currentIndex, false);
+            centerOnIndex(state.currentIndex, false);
         }
     }
 
@@ -1379,6 +1341,8 @@
                                 const idx = findCurrentIndex();
                                 if (idx >= 0 && idx !== state.currentIndex) {
                                     updateActive(idx, false);
+                                } else if (idx >= 0) {
+                                    centerOnIndex(idx, true);
                                 }
                             }
                         }
