@@ -1,7 +1,8 @@
-exports.version = 2.6;
+exports.version = 2.7;
 exports.apiRequired = 10.0;
 exports.repo = "Hug3O/Image-browser";
 exports.description = "Picasa-style image browser with bottom thumbnail strip.";
+exports.depend = [{ "repo": "rejetto/thumbnails", "version": 4 }]
 exports.frontend_js = ['main.js'];
 exports.frontend_css = ['style.css'];
 
