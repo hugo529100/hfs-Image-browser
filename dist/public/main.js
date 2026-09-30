@@ -48,9 +48,11 @@
     }
 
     let C = {
-        thumbnailSize: 80,
-        mobileThumbnailSize: 56,
-        preloadCount: 3,
+    thumbnailSize: 10,
+    thumbnailSizeUnit: 'vh',
+    mobileThumbnailSize: 6,
+    mobileThumbnailSizeUnit: 'vh',
+    preloadCount: 3,
     };
 
     function loadConfig() {
@@ -63,12 +65,43 @@
         } catch (e) { }
     }
 
+    /**
+     * 将“数值 + 单位”换算成实际的像素高度。
+     * 支持 px / vh / vw，默认回退到 px。
+     */
+    function resolveThumbHeight(value, unit) {
+        const num = parseFloat(value);
+        if (isNaN(num) || num <= 0) return null;
+
+        switch (unit) {
+            case 'vh':
+                return Math.round((num / 100) * window.innerHeight);
+            case 'vw':
+                return Math.round((num / 100) * window.innerWidth);
+            case 'px':
+            default:
+                return Math.round(num);
+        }
+        return Math.max(24, h);
+    }
+
     function getEffectiveThumbSize() {
         const isMobile = window.innerWidth <= BUILTIN.mobileBreakpoint;
+
+        const rawSize = isMobile ? C.mobileThumbnailSize : C.thumbnailSize;
+        const rawUnit = isMobile
+            ? (C.mobileThumbnailSizeUnit || 'px')
+            : (C.thumbnailSizeUnit || 'px');
+
+        const resolved = resolveThumbHeight(rawSize, rawUnit);
+
+        // 换算失败时回退到内置默认值（px）
+        const h = (resolved && resolved > 0)
+            ? resolved
+            : (isMobile ? BUILTIN.mobileThumbnailSize : BUILTIN.thumbnailSize);
+
         return {
-            h: isMobile
-                ? (+C.mobileThumbnailSize || BUILTIN.mobileThumbnailSize)
-                : +C.thumbnailSize,
+            h,
             gap: isMobile ? BUILTIN.mobileThumbnailSpacing : BUILTIN.thumbnailSpacing,
             trans: isMobile ? BUILTIN.mobileTransitionDuration : BUILTIN.transitionDuration,
         };

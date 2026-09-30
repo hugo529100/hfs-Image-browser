@@ -1,4 +1,4 @@
-exports.version = 2.7;
+exports.version = 2.8;
 exports.apiRequired = 10.0;
 exports.repo = "Hug3O/Image-browser";
 exports.description = "Picasa-style image browser with bottom thumbnail strip.";
@@ -11,9 +11,27 @@ exports.config = {
     // Thumbnail size (desktop)
     // ============================================================
     thumbnailSize: {
-        type: 'number', defaultValue: 80, min: 40, max: 200,
-        label: "Thumbnail Size (px, desktop)",
-        helperText: "Height of each thumbnail in the strip (desktop only).",
+        type: 'number', defaultValue: 10, min: 1, max: 200,
+        label: "Thumbnail Size (desktop)",
+        helperText: "Height of each thumbnail in the strip (desktop only). " +
+                    "Unit is controlled by 'Thumbnail Size Unit' below. " +
+                    "You can also use vh or vw.",
+        frontend: true
+    },
+
+    // ============================================================
+    // Thumbnail size unit (desktop)
+    // ============================================================
+    thumbnailSizeUnit: {
+        type: 'select',
+        defaultValue: 'vh',
+        options: [
+            { value: 'px', label: 'px (pixels)' },
+            { value: 'vh', label: 'vh (viewport height)' },
+            { value: 'vw', label: 'vw (viewport width)' }
+        ],
+        label: "Thumbnail Size Unit (desktop)",
+        helperText: "Unit for the desktop thumbnail height. Choose px, vh, or vw.",
         frontend: true
     },
 
@@ -21,9 +39,28 @@ exports.config = {
     // Thumbnail size (mobile, independent)
     // ============================================================
     mobileThumbnailSize: {
-        type: 'number', defaultValue: 46, min: 32, max: 160,
-        label: "Thumbnail Size (px, mobile)",
-        helperText: "Height of each thumbnail in the strip on mobile screens (width <= 640px).",
+        type: 'number', defaultValue: 6, min: 1, max: 160,
+        label: "Thumbnail Size (mobile)",
+        helperText: "Height of each thumbnail in the strip on mobile screens " +
+                    "(width <= 640px). Unit is controlled by " +
+                    "'Mobile Thumbnail Size Unit' below. " +
+                    "You can also use vh or vw.",
+        frontend: true
+    },
+
+    // ============================================================
+    // Thumbnail size unit (mobile)
+    // ============================================================
+    mobileThumbnailSizeUnit: {
+        type: 'select',
+        defaultValue: 'vh',
+        options: [
+            { value: 'px', label: 'px (pixels)' },
+            { value: 'vh', label: 'vh (viewport height)' },
+            { value: 'vw', label: 'vw (viewport width)' }
+        ],
+        label: "Mobile Thumbnail Size Unit",
+        helperText: "Unit for the mobile thumbnail height. Choose px, vh, or vw.",
         frontend: true
     },
 
