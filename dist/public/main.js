@@ -218,6 +218,7 @@
         lastOrientationKey: '',
         mountedAt: 0,
         metaCache: new Map(),
+        resizeReloadTimer: null,
     };
 
     function fadeOutMainImage() {
@@ -1297,9 +1298,82 @@
         state.lastKnownName = '';
         state.mountedAt = 0;
         mounted = false;
+        if (state.resizeReloadTimer) {
+            clearTimeout(state.resizeReloadTimer);
+            state.resizeReloadTimer = null;
+        }
         document.removeEventListener('keydown', onKeyDown, { capture: true });
         window.removeEventListener('resize', onResize);
         window.removeEventListener('orientationchange', onResize);
+    }
+
+    /**
+     * 软重载：保留 state.images / currentIndex / collapsed 等资料，
+     * 只拆掉 strip DOM，用新的 innerWidth / innerHeight 重新建立。
+     * 用于手机竖屏 <-> 横屏切换等「环境级」变化。
+     */
+    function softReloadBrowser() {
+        if (!mounted || !state.stripEl) return;
+
+        const viewer = document.querySelector('.file-show');
+        if (!viewer) return;
+
+        const keepIndex = state.currentIndex;
+        const keepCollapsed = state.collapsed;
+        const keepImages = state.images;
+        const keepFetchedFor = state.listFetchedFor;
+        const keepName = state.lastKnownName;
+
+        // 只移除旧 strip DOM，不清 state 资料
+        document.querySelectorAll('.ib-strip-container').forEach(el => el.remove());
+        state.stripEl = null;
+        state.trackEl = null;
+        state.counterEl = null;
+        state.fileInfoEl = null;
+        state.collapseTabEl = null;
+        state.selectorEl = null;
+        state.thumbEls.clear();
+        state.winStart = 0;
+        state.winEnd = 0;
+        state.lastRenderIndex = -1;
+
+        // 用新的视窗尺寸重新注入 CSS 变数
+        injectCssVars();
+
+        // 还原资料
+        state.images = keepImages;
+        state.currentIndex = keepIndex;
+        state.collapsed = keepCollapsed;
+        state.listFetchedFor = keepFetchedFor;
+        state.lastKnownName = keepName;
+
+        // 重新建立 strip
+        const contain = viewer.querySelector('.contain') || viewer.firstElementChild;
+        if (!contain) return;
+        contain.style.display = 'flex';
+        contain.style.setProperty('flex-direction', 'column', 'important');
+        contain.style.height = '100%';
+        contain.style.overflow = 'hidden';
+
+        const main = contain.querySelector('.main');
+        if (main) {
+            main.style.flex = '1 1 auto';
+            main.style.minHeight = '0';
+            main.style.overflow = 'hidden';
+            main.style.position = 'relative';
+            main.style.paddingBottom = '0';
+        }
+
+        const strip = buildStrip();
+        contain.appendChild(strip);
+
+        const size = getEffectiveThumbSize();
+        state.lastSizeKey = `${size.h}x${size.gap}`;
+        state.lastOrientationKey = getOrientationKey();
+        state.mountedAt = Date.now();
+
+        applyCollapseState();
+        updateActive(keepIndex, false);
     }
 
     function getOrientationKey() {
@@ -1317,30 +1391,26 @@
         const sizeKey = `${size.h}x${size.gap}`;
         const orientKey = getOrientationKey();
 
-        if (state.lastSizeKey !== sizeKey || state.lastOrientationKey !== orientKey) {
-            state.lastSizeKey = sizeKey;
-            state.lastOrientationKey = orientKey;
+        const changed =
+            state.lastSizeKey !== sizeKey ||
+            state.lastOrientationKey !== orientKey;
 
-            injectCssVars();
-
-            const strip = state.stripEl;
-            const track = state.trackEl;
-            if (strip && track) {
-                track.style.transition = 'none';
-                track.style.transform = 'translateY(-50%) translateX(0px)';
-                rebuildTrackDOM();
-                requestAnimationFrame(() => {
-                    if (state.currentIndex >= 0) {
-                        updateActive(state.currentIndex, false);
-                    }
-                });
-            }
+        if (!changed) {
+            // 只有容器宽度微调，重新置中即可
+            if (state.currentIndex >= 0) centerOnIndex(state.currentIndex, false);
             return;
         }
 
-        if (state.currentIndex >= 0) {
-            centerOnIndex(state.currentIndex, false);
-        }
+        state.lastSizeKey = sizeKey;
+        state.lastOrientationKey = orientKey;
+
+        // debounce：手机旋转时 resize / orientationchange 会连续触发多次，
+        // 等 150ms 让浏览器稳定后再重建，避免用旧尺寸建好又立刻被拆掉。
+        if (state.resizeReloadTimer) clearTimeout(state.resizeReloadTimer);
+        state.resizeReloadTimer = setTimeout(() => {
+            state.resizeReloadTimer = null;
+            softReloadBrowser();
+        }, 150);
     }
 
     let scheduled = false;
@@ -1442,6 +1512,7 @@
         healThumbnails, fadeInMainImage, fadeOutMainImage,
         injectCssVars, getEffectiveThumbSize,
         mount, unmount,
+        softReloadBrowser,
         toggleCollapse,
         resetDetect: () => { state.nextButtonSide = 'right'; state.jumpMode = null; },
         refresh: () => { state.listFetchedFor = ''; schedule(); },
