@@ -82,7 +82,6 @@
             default:
                 return Math.round(num);
         }
-        return Math.max(24, h);
     }
 
     function getEffectiveThumbSize() {
@@ -200,6 +199,7 @@
         fileInfoEl: null,
         collapseTabEl: null,
         selectorEl: null,
+        zoomControlsEl: null,
         collapsed: false,
         lastWheelTime: 0,
         preloadCache: new Map(),
@@ -220,6 +220,349 @@
         metaCache: new Map(),
         resizeReloadTimer: null,
     };
+
+    // ============================================================
+    // Zoom state & functions
+    // ============================================================
+    const ZOOM_CFG = {
+        MIN: 1,
+        MAX: 8,
+        STEP: 0.5,
+    };
+
+    const zoomState = {
+        scale: 1,
+        translateX: 0,
+        translateY: 0,
+        dragging: false,
+        dragStartX: 0,
+        dragStartY: 0,
+        startTranslateX: 0,
+        startTranslateY: 0,
+        lastTouchDist: 0,
+        pinchStartScale: 1,
+        pinchStartTranslateX: 0,
+        pinchStartTranslateY: 0,
+        pinchStartCenterX: 0,
+        pinchStartCenterY: 0,
+    };
+
+    function getMainImage() {
+        return document.querySelector('.file-show img.showing');
+    }
+
+    /**
+     * 取得包裹主图的容器（.showing-container）。
+     * 手势监听绑定在这个容器上，让捕捉范围扩大到整块图片显示区域，
+     * 而不只是图片本身。
+     */
+    function getShowingContainer() {
+        const img = getMainImage();
+        if (!img) return null;
+        return img.closest('.showing-container') || img.parentElement || null;
+    }
+
+    /**
+     * 设置/恢复容器的 touch-action，用来在捏合缩放时阻止浏览器
+     * 把双指手势当作页面缩放（pinch-zoom）。
+     */
+    function setContainerTouchAction(value) {
+        const container = getShowingContainer();
+        if (container) container.style.touchAction = value;
+    }
+
+    function applyZoomTransform(animated = false) {
+        const img = getMainImage();
+        if (!img) return;
+
+        if (animated) {
+            img.style.transition = 'transform 0.2s ease-out';
+        } else {
+            img.style.transition = 'none';
+        }
+
+        img.style.transformOrigin = 'center center';
+        img.style.transform =
+            `translate(${zoomState.translateX}px, ${zoomState.translateY}px) scale(${zoomState.scale})`;
+        img.style.cursor = zoomState.scale > 1
+            ? (zoomState.dragging ? 'grabbing' : 'grab')
+            : '';
+        img.style.willChange = zoomState.scale > 1 ? 'transform' : '';
+        img.style.userSelect = 'none';
+        img.style.touchAction = zoomState.scale > 1 ? 'none' : '';
+
+        if (animated) {
+            requestAnimationFrame(() => {
+                const cur = getMainImage();
+                if (cur) cur.style.transition = '';
+            });
+        }
+    }
+
+    function clampZoomTranslation() {
+        const img = getMainImage();
+        if (!img) return;
+
+        const container = img.closest('.main') || img.parentElement;
+        if (!container) return;
+
+        const cw = container.clientWidth;
+        const ch = container.clientHeight;
+
+        const nw = img.naturalWidth || 0;
+        const nh = img.naturalHeight || 0;
+        if (!nw || !nh) return;
+
+        const fit = Math.min(cw / nw, ch / nh);
+        const displayW = nw * fit * zoomState.scale;
+        const displayH = nh * fit * zoomState.scale;
+
+        const maxX = Math.max(0, (displayW - cw) / 2);
+        const maxY = Math.max(0, (displayH - ch) / 2);
+
+        zoomState.translateX = Math.max(-maxX, Math.min(maxX, zoomState.translateX));
+        zoomState.translateY = Math.max(-maxY, Math.min(maxY, zoomState.translateY));
+    }
+
+    function zoomImage(direction, factor) {
+        const oldScale = zoomState.scale;
+        let newScale;
+
+        if (typeof factor === 'number' && factor > 0) {
+            newScale = factor;
+        } else {
+            newScale = oldScale + direction * ZOOM_CFG.STEP;
+        }
+
+        newScale = Math.max(ZOOM_CFG.MIN, Math.min(ZOOM_CFG.MAX, newScale));
+        if (newScale === oldScale) return;
+
+        zoomState.scale = newScale;
+
+        if (newScale <= 1) {
+            zoomState.translateX = 0;
+            zoomState.translateY = 0;
+        } else {
+            clampZoomTranslation();
+        }
+
+        applyZoomTransform(true);
+    }
+
+    function resetZoom() {
+        if (zoomState.scale === 1 &&
+            zoomState.translateX === 0 &&
+            zoomState.translateY === 0) return;
+        zoomState.scale = 1;
+        zoomState.translateX = 0;
+        zoomState.translateY = 0;
+        applyZoomTransform(true);
+        setContainerTouchAction('');
+        const img = getMainImage();
+        if (img) img.style.cursor = '';
+    }
+
+    // 始终绑定主图容器上的指针/触摸监听，让双指手势独立于缩放级别可用。
+    let zoomDragBound = false;
+
+    function onZoomPointerDown(e) {
+        if (zoomState.scale <= 1) return;
+        const img = getMainImage();
+        if (!img) return;
+        if (e.button !== undefined && e.button !== 0) return;
+
+        // 排除交互元素（缩略图条、缩放按钮、导航按钮等），
+        // 其余区域（含图片周围空白）都视为拖拽起点。
+        if (e.target && e.target.closest &&
+            e.target.closest('.ib-strip-container, .ib-zoom-controls, .nav, button, a')) {
+            return;
+        }
+
+        zoomState.dragging = true;
+        zoomState.dragStartX = e.clientX;
+        zoomState.dragStartY = e.clientY;
+        zoomState.startTranslateX = zoomState.translateX;
+        zoomState.startTranslateY = zoomState.translateY;
+
+        img.style.cursor = 'grabbing';
+        img.style.transition = 'none';
+
+        if (e.pointerId !== undefined && img.setPointerCapture) {
+            try { img.setPointerCapture(e.pointerId); } catch (err) { }
+        }
+        e.preventDefault();
+    }
+
+    function onZoomPointerMove(e) {
+        if (!zoomState.dragging) return;
+        const img = getMainImage();
+        if (!img) return;
+
+        const dx = e.clientX - zoomState.dragStartX;
+        const dy = e.clientY - zoomState.dragStartY;
+
+        zoomState.translateX = zoomState.startTranslateX + dx;
+        zoomState.translateY = zoomState.startTranslateY + dy;
+
+        clampZoomTranslation();
+        applyZoomTransform(false);
+        e.preventDefault();
+    }
+
+    function onZoomPointerUp(e) {
+        if (!zoomState.dragging) return;
+        zoomState.dragging = false;
+        const img = getMainImage();
+        if (img) {
+            img.style.cursor = zoomState.scale > 1 ? 'grab' : '';
+            if (e.pointerId !== undefined && img.releasePointerCapture) {
+                try { img.releasePointerCapture(e.pointerId); } catch (err) { }
+            }
+        }
+    }
+
+    function onZoomTouchStart(e) {
+        const img = getMainImage();
+        if (!img) return;
+
+        if (e.touches.length === 2) {
+            // 双指捏合：无论当前 scale 是多少都进入捏合模式
+            const t1 = e.touches[0];
+            const t2 = e.touches[1];
+            const dx = t2.clientX - t1.clientX;
+            const dy = t2.clientY - t1.clientY;
+            zoomState.lastTouchDist = Math.sqrt(dx * dx + dy * dy);
+            zoomState.pinchStartScale = zoomState.scale;
+            zoomState.pinchStartTranslateX = zoomState.translateX;
+            zoomState.pinchStartTranslateY = zoomState.translateY;
+
+            const rect = img.getBoundingClientRect();
+            const cx = (t1.clientX + t2.clientX) / 2;
+            const cy = (t1.clientY + t2.clientY) / 2;
+            zoomState.pinchStartCenterX = cx - (rect.left + rect.width / 2);
+            zoomState.pinchStartCenterY = cy - (rect.top + rect.height / 2);
+
+            // 阻止浏览器默认的翻页 / 页面缩放行为
+            setContainerTouchAction('none');
+            e.preventDefault();
+        } else if (e.touches.length === 1 && zoomState.scale > 1) {
+            // 放大后单指拖拽平移
+            const t = e.touches[0];
+            zoomState.dragging = true;
+            zoomState.dragStartX = t.clientX;
+            zoomState.dragStartY = t.clientY;
+            zoomState.startTranslateX = zoomState.translateX;
+            zoomState.startTranslateY = zoomState.translateY;
+            e.preventDefault();
+        }
+    }
+
+    function onZoomTouchMove(e) {
+        const img = getMainImage();
+        if (!img) return;
+
+        if (e.touches.length === 2) {
+            const t1 = e.touches[0];
+            const t2 = e.touches[1];
+            const dx = t2.clientX - t1.clientX;
+            const dy = t2.clientY - t1.clientY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (zoomState.lastTouchDist > 0) {
+                let newScale = zoomState.pinchStartScale * (dist / zoomState.lastTouchDist);
+                newScale = Math.max(ZOOM_CFG.MIN, Math.min(ZOOM_CFG.MAX, newScale));
+                zoomState.scale = newScale;
+
+                const scaleRatio = newScale / zoomState.pinchStartScale;
+                zoomState.translateX = zoomState.pinchStartTranslateX +
+                    zoomState.pinchStartCenterX * (1 - scaleRatio);
+                zoomState.translateY = zoomState.pinchStartTranslateY +
+                    zoomState.pinchStartCenterY * (1 - scaleRatio);
+
+                if (newScale <= 1) {
+                    zoomState.translateX = 0;
+                    zoomState.translateY = 0;
+                } else {
+                    clampZoomTranslation();
+                }
+
+                applyZoomTransform(false);
+            }
+            // 阻止浏览器接管手势（页面缩放 / 滚动）
+            setContainerTouchAction('none');
+            e.preventDefault();
+        } else if (e.touches.length === 1 && zoomState.dragging) {
+            const t = e.touches[0];
+            const dx = t.clientX - zoomState.dragStartX;
+            const dy = t.clientY - zoomState.dragStartY;
+            zoomState.translateX = zoomState.startTranslateX + dx;
+            zoomState.translateY = zoomState.startTranslateY + dy;
+            clampZoomTranslation();
+            applyZoomTransform(false);
+            e.preventDefault();
+        }
+    }
+
+    function onZoomTouchEnd(e) {
+        if (e.touches.length < 2) {
+            zoomState.lastTouchDist = 0;
+        }
+        if (e.touches.length === 0) {
+            zoomState.dragging = false;
+        }
+        // 捏合缩回 1x 时归位，但不解除监听
+        if (zoomState.scale <= 1) {
+            zoomState.scale = 1;
+            zoomState.translateX = 0;
+            zoomState.translateY = 0;
+            applyZoomTransform(true);
+        }
+        // 手指全部离开后恢复容器的 touch-action，让页面可正常滚动
+        if (e.touches.length === 0 && zoomState.scale <= 1) {
+            setContainerTouchAction('');
+        }
+    }
+
+    function bindZoomDrag() {
+        const img = getMainImage();
+        if (!img) return;
+
+        // 绑定到包裹容器，扩大手势捕捉范围
+        const container = getShowingContainer();
+        if (!container) return;
+
+        if (zoomDragBound) return;
+
+        img.style.cursor = zoomState.scale > 1 ? 'grab' : '';
+
+        container.addEventListener('pointerdown', onZoomPointerDown);
+        window.addEventListener('pointermove', onZoomPointerMove);
+        window.addEventListener('pointerup', onZoomPointerUp);
+
+        container.addEventListener('touchstart', onZoomTouchStart, { passive: false });
+        container.addEventListener('touchmove', onZoomTouchMove, { passive: false });
+        container.addEventListener('touchend', onZoomTouchEnd, { passive: true });
+        container.addEventListener('touchcancel', onZoomTouchEnd, { passive: true });
+
+        zoomDragBound = true;
+    }
+
+    function unbindZoomDrag() {
+        const container = getShowingContainer();
+        if (container) {
+            container.removeEventListener('pointerdown', onZoomPointerDown);
+            container.removeEventListener('touchstart', onZoomTouchStart);
+            container.removeEventListener('touchmove', onZoomTouchMove);
+            container.removeEventListener('touchend', onZoomTouchEnd);
+            container.removeEventListener('touchcancel', onZoomTouchEnd);
+        }
+        window.removeEventListener('pointermove', onZoomPointerMove);
+        window.removeEventListener('pointerup', onZoomPointerUp);
+        zoomDragBound = false;
+    }
+    // ============================================================
+    // Zoom end
+    // ============================================================
 
     function fadeOutMainImage() {
         const showing = document.querySelector('.file-show img.showing');
@@ -504,6 +847,9 @@
             return;
         }
 
+        // 只重置缩放，不解绑监听（双指手势需要持续可用）
+        resetZoom();
+
         const diff = index - state.currentIndex;
 
         fadeOutMainImage();
@@ -526,6 +872,9 @@
 
         requestAnimationFrame(() => {
             fadeInMainImage();
+            // 切换图片后主图节点可能被替换，需要重新绑定
+            zoomDragBound = false;
+            bindZoomDrag();
         });
     }
 
@@ -723,8 +1072,51 @@
         fileInfo.className = 'ib-file-info';
         bar.appendChild(fileInfo);
 
+        // Zoom controls
+        const zoomControls = document.createElement('div');
+        zoomControls.className = 'ib-zoom-controls';
+
+        const zoomOutBtn = document.createElement('button');
+        zoomOutBtn.type = 'button';
+        zoomOutBtn.className = 'ib-zoom-btn';
+        zoomOutBtn.textContent = '−';
+        zoomOutBtn.title = 'Zoom out (-)';
+        zoomOutBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            zoomImage(-1);
+        });
+
+        const zoomResetBtn = document.createElement('button');
+        zoomResetBtn.type = 'button';
+        zoomResetBtn.className = 'ib-zoom-btn';
+        zoomResetBtn.textContent = 'o';
+        zoomResetBtn.title = 'Reset zoom (*)';
+        zoomResetBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            resetZoom();
+        });
+
+        const zoomInBtn = document.createElement('button');
+        zoomInBtn.type = 'button';
+        zoomInBtn.className = 'ib-zoom-btn';
+        zoomInBtn.textContent = '+';
+        zoomInBtn.title = 'Zoom in (+)';
+        zoomInBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            zoomImage(1);
+        });
+
+        zoomControls.appendChild(zoomOutBtn);
+        zoomControls.appendChild(zoomResetBtn);
+        zoomControls.appendChild(zoomInBtn);
+
         const counter = document.createElement('div');
         counter.className = 'ib-counter';
+
+        bar.appendChild(zoomControls);
         bar.appendChild(counter);
 
         strip.appendChild(bar);
@@ -738,6 +1130,7 @@
         state.counterEl = counter;
         state.fileInfoEl = fileInfo;
         state.collapseTabEl = tab;
+        state.zoomControlsEl = zoomControls;
 
         buildThumbsInitial();
 
@@ -1111,6 +1504,27 @@
         if (tag === 'INPUT' || tag === 'TEXTAREA' ||
             (document.activeElement && document.activeElement.isContentEditable)) return;
         if (!document.querySelector('.file-show')) return;
+
+        // Zoom hotkeys
+        if (e.key === '+' || e.key === '=') {
+            e.preventDefault();
+            e.stopPropagation();
+            zoomImage(1);
+            return;
+        }
+        if (e.key === '-' || e.key === '_') {
+            e.preventDefault();
+            e.stopPropagation();
+            zoomImage(-1);
+            return;
+        }
+        if (e.key === '*') {
+            e.preventDefault();
+            e.stopPropagation();
+            resetZoom();
+            return;
+        }
+
         if (e.key === 'ArrowLeft') {
             e.preventDefault(); e.stopPropagation(); navigatePrev();
         } else if (e.key === 'ArrowRight') {
@@ -1205,6 +1619,8 @@
             const idx = findCurrentIndex();
             if (idx >= 0 && idx !== state.currentIndex) updateActive(idx, true);
             else centerOnIndex(state.currentIndex, true);
+            // 确保缩放监听已绑定
+            bindZoomDrag();
             return;
         }
 
@@ -1261,6 +1677,10 @@
             applyCollapseState();
             updateActive(idx, false);
 
+            // 始终绑定主图容器上的指针/触摸监听，
+            // 让双指手势独立于缩放级别可用。
+            bindZoomDrag();
+
             if (BUILTIN.enableKeyboardNav) {
                 document.addEventListener('keydown', onKeyDown, { capture: true });
             }
@@ -1276,6 +1696,13 @@
     }
 
     function unmount() {
+        resetZoom();
+        unbindZoomDrag();
+        zoomState.scale = 1;
+        zoomState.translateX = 0;
+        zoomState.translateY = 0;
+        zoomState.dragging = false;
+
         document.querySelectorAll('.ib-strip-container').forEach(el => el.remove());
 
         state.stripEl = null;
@@ -1284,6 +1711,7 @@
         state.fileInfoEl = null;
         state.collapseTabEl = null;
         state.selectorEl = null;
+        state.zoomControlsEl = null;
         state.thumbEls.clear();
         state.winStart = 0;
         state.winEnd = 0;
@@ -1332,6 +1760,7 @@
         state.fileInfoEl = null;
         state.collapseTabEl = null;
         state.selectorEl = null;
+        state.zoomControlsEl = null;
         state.thumbEls.clear();
         state.winStart = 0;
         state.winEnd = 0;
@@ -1374,6 +1803,10 @@
 
         applyCollapseState();
         updateActive(keepIndex, false);
+
+        // 重建 DOM 后重新绑定手势
+        zoomDragBound = false;
+        bindZoomDrag();
     }
 
     function getOrientationKey() {
@@ -1396,7 +1829,6 @@
             state.lastOrientationKey !== orientKey;
 
         if (!changed) {
-            // 只有容器宽度微调，重新置中即可
             if (state.currentIndex >= 0) centerOnIndex(state.currentIndex, false);
             return;
         }
@@ -1496,7 +1928,7 @@
                     setTimeout(healThumbnails, 500);
                 }
             }
-        }, 100);
+        }, 250);
 
         schedule();
     }
@@ -1514,6 +1946,7 @@
         mount, unmount,
         softReloadBrowser,
         toggleCollapse,
+        zoomImage, resetZoom, zoomState,
         resetDetect: () => { state.nextButtonSide = 'right'; state.jumpMode = null; },
         refresh: () => { state.listFetchedFor = ''; schedule(); },
     };

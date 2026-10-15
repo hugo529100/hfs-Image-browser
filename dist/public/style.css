@@ -1,18 +1,3 @@
-/* ============================================
-   Picasa-style Image Browser - Thumbnail Strip
-   v28:
-   - File info row: size · created · modified ·
-     resolution · aspect ratio · megapixels
-   - Resolution/ratio/MP hidden on portrait phones
-   - Rebuild on orientation change
-   - Wider spacing on desktop
-   - Collapse tab (state persisted in localStorage)
-   - No height transition on collapse (avoids flash on mobile)
-   - No per-thumbnail index badge
-   - Configurable mobile thumbnail height
-   - Removed entry-comment placeholder
-   - Dark theme: plugin text uses var(--text)
-   ============================================ */
 
 /* ============================================================
    Root variables (injected by main.js; fallback defaults)
@@ -208,7 +193,7 @@
 }
 
 /* ============================================================
-   Bottom info bar: file info on the left, counter on the right
+   Bottom info bar: file info on the left, zoom + counter on the right
    ============================================================ */
 .ib-bar {
     position: absolute;
@@ -217,7 +202,7 @@
     right: 0;
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     padding: 0 4px 0 40px; /* leave room for collapse tab */
     pointer-events: none;
     z-index: 2;
@@ -237,6 +222,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     letter-spacing: 0.3px;
+    margin-right: auto;
 }
 
 .ib-file-info .ib-meta {
@@ -256,6 +242,52 @@
     pointer-events: none;
     white-space: nowrap;
     flex: 0 0 auto;
+}
+
+/* ============================================================
+   Zoom controls (+, o, -)
+   ============================================================ */
+.ib-zoom-controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    pointer-events: auto;
+    flex: 0 0 auto;
+    z-index: 3;
+}
+
+.ib-zoom-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 14px;
+    padding: 0;
+    margin: 0;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 13px;
+    line-height: 1;
+    font-family: inherit;
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease,
+                transform 0.1s ease;
+    opacity: 0.8;
+}
+
+.ib-zoom-btn:hover {
+    background: rgba(255, 255, 255, 0.18);
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.45);
+}
+
+.ib-zoom-btn:active {
+    background: rgba(255, 255, 255, 0.3);
+    transform: scale(0.94);
 }
 
 /* ============================================================
@@ -378,6 +410,26 @@
         height: 20px;
         font-size: 9px;
     }
+
+    .ib-zoom-controls {
+        gap: 3px;
+    }
+
+    .ib-zoom-btn {
+        width: 18px;
+        height: 18px;
+        font-size: 12px;
+    }
+}
+
+/* ============================================================
+   Hide zoom buttons on portrait phones
+   (pinch gestures still work on the image)
+   ============================================================ */
+@media (max-width: 640px) and (orientation: portrait) {
+    .ib-zoom-controls {
+        display: none !important;
+    }
 }
 
 /* ============================================================
@@ -390,14 +442,6 @@
         display: none;
     }
 }
-
-/* ============================================================
-   Fullscreen
-   ============================================================ 
-:fullscreen .ib-strip-container,
-:-webkit-full-screen .ib-strip-container {
-    background: var(--bg, rgba(0, 0, 0, 0.9));
-}*/
 
 /* ============================================================
    Dark theme overrides: use var(--text) for all plugin text
@@ -431,4 +475,27 @@ body.theme-dark .ib-collapse-tab {
 
 body.theme-dark .ib-collapse-tab:hover {
     color: var(--text, #eaeaea);
+}
+
+body.theme-dark .ib-zoom-btn {
+    border-color: color-mix(in srgb, var(--text, #eaeaea) 25%, transparent);
+    background: color-mix(in srgb, var(--text, #eaeaea) 8%, transparent);
+    color: color-mix(in srgb, var(--text, #eaeaea) 85%, transparent);
+}
+
+body.theme-dark .ib-zoom-btn:hover {
+    background: color-mix(in srgb, var(--text, #eaeaea) 18%, transparent);
+    color: var(--text, #eaeaea);
+    border-color: color-mix(in srgb, var(--text, #eaeaea) 45%, transparent);
+}
+
+.file-show .showing-container {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    touch-action: pan-y pinch-zoom;
 }
