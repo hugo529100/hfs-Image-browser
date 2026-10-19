@@ -200,6 +200,7 @@
         collapseTabEl: null,
         selectorEl: null,
         zoomControlsEl: null,
+        mainEl: null,
         collapsed: false,
         lastWheelTime: 0,
         preloadCache: new Map(),
@@ -1134,9 +1135,9 @@
 
         buildThumbsInitial();
 
-        if (BUILTIN.enableWheelSwitch) {
-            strip.addEventListener('wheel', onWheel, { passive: false });
-        }
+        // 注意：滚轮监听不在这里绑定。
+        // 为了让捕捉范围扩大到整块大图区域，统一绑在 .main 上（见 mount()）。
+
         bindTouchEvents(strip);
 
         return strip;
@@ -1478,12 +1479,12 @@
 
     function onWheel(e) {
         if (state.collapsed) return;
-        e.preventDefault();
-        e.stopPropagation();
+
+        // 缩放态下不接管滚轮（避免拖拽/平移时误切图）
+        if (zoomState.scale > 1) return;
 
         const now = Date.now();
         if (now - state.lastWheelTime < BUILTIN.wheelDebounceMs) return;
-        state.lastWheelTime = now;
 
         let dir = 0;
         if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) dir = e.deltaX > 0 ? 1 : -1;
@@ -1495,7 +1496,15 @@
 
         const target = state.currentIndex + dir * step;
         const clamped = Math.max(0, Math.min(state.images.length - 1, target));
-        if (clamped !== state.currentIndex) navigateTo(clamped);
+
+        // 已到边界：不拦截，让滚轮继续交给页面/父级处理
+        if (clamped === state.currentIndex) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        state.lastWheelTime = now;
+        navigateTo(clamped);
     }
 
     function onKeyDown(e) {
@@ -1681,6 +1690,15 @@
             // 让双指手势独立于缩放级别可用。
             bindZoomDrag();
 
+            // 把滚轮监听绑定到主图区域（.main），
+            // 这样在大图上滚动即可切换图片，而不仅限于缩略图条。
+            if (main && BUILTIN.enableWheelSwitch) {
+                // 幂等：先移除再添加，避免 softReload 后重复绑定
+                main.removeEventListener('wheel', onWheel);
+                main.addEventListener('wheel', onWheel, { passive: false });
+                state.mainEl = main;
+            }
+
             if (BUILTIN.enableKeyboardNav) {
                 document.addEventListener('keydown', onKeyDown, { capture: true });
             }
@@ -1695,6 +1713,25 @@
         }
     }
 
+    function unbindWheel() {
+        if (state.mainEl) {
+            state.mainEl.removeEventListener('wheel', onWheel);
+            state.mainEl = null;
+        }
+    }
+
+    function unbindWheelAll() {
+        // 兜底：把可能绑定过 wheel 的元素都解绑一次
+        document.querySelectorAll('.file-show .main').forEach(el => {
+            el.removeEventListener('wheel', onWheel);
+        });
+        unbindWheel();
+    }
+
+    function unbindWheelFromMain() {
+        unbindWheelAll();
+    }
+
     function unmount() {
         resetZoom();
         unbindZoomDrag();
@@ -1702,6 +1739,8 @@
         zoomState.translateX = 0;
         zoomState.translateY = 0;
         zoomState.dragging = false;
+
+        unbindWheelFromMain();
 
         document.querySelectorAll('.ib-strip-container').forEach(el => el.remove());
 
@@ -1807,6 +1846,13 @@
         // 重建 DOM 后重新绑定手势
         zoomDragBound = false;
         bindZoomDrag();
+
+        // 重新绑定滚轮到主图区域（幂等：先解绑再绑）
+        unbindWheelAll();
+        if (main && BUILTIN.enableWheelSwitch) {
+            main.addEventListener('wheel', onWheel, { passive: false });
+            state.mainEl = main;
+        }
     }
 
     function getOrientationKey() {
