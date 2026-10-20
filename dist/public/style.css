@@ -1,4 +1,3 @@
-
 /* ============================================================
    Root variables (injected by main.js; fallback defaults)
    ============================================================ */
@@ -33,11 +32,9 @@
     user-select: none;
     touch-action: pan-y;
     -webkit-overflow-scrolling: touch;
-    /* Only fade; no height transition → no flash when collapsed */
     transition: opacity 0.22s ease;
 }
 
-/* Collapsed: only a small tab at bottom-left */
 .ib-strip-container.ib-collapsed {
     height: var(--ib-tab-size);
     min-height: var(--ib-tab-size);
@@ -193,7 +190,7 @@
 }
 
 /* ============================================================
-   Bottom info bar: file info on the left, zoom + counter on the right
+   Bottom info bar
    ============================================================ */
 .ib-bar {
     position: absolute;
@@ -203,7 +200,7 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    padding: 0 4px 0 40px; /* leave room for collapse tab */
+    padding: 0 4px 0 40px;
     pointer-events: none;
     z-index: 2;
     gap: 8px;
@@ -229,7 +226,6 @@
     display: inline-block;
 }
 
-/* Desktop: wider spacing between the meta items */
 .ib-file-info .ib-meta-gap {
     display: inline-block;
     width: 18px;
@@ -245,7 +241,7 @@
 }
 
 /* ============================================================
-   Zoom controls (+, o, -)
+   Zoom controls
    ============================================================ */
 .ib-zoom-controls {
     display: flex;
@@ -291,7 +287,7 @@
 }
 
 /* ============================================================
-   Collapse tab (small button in top-left)
+   Collapse tab
    ============================================================ */
 .ib-collapse-tab {
     position: absolute;
@@ -322,7 +318,6 @@
     pointer-events: none;
 }
 
-/* When collapsed, the tab sticks to bottom-left */
 .ib-strip-container.ib-collapsed .ib-collapse-tab {
     top: auto;
     bottom: 4px;
@@ -368,6 +363,111 @@
 }
 
 /* ============================================================
+   Progressive preview (LQIP)
+   ============================================================ */
+.file-show .showing-container {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    touch-action: pan-y pinch-zoom;
+}
+
+.file-show .showing-container .ib-progressive-preview {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center;
+    pointer-events: none;
+    z-index: 2;
+    opacity: 1;
+    transition: opacity 300ms ease-out;
+    background: transparent;
+    will-change: opacity;
+}
+
+.file-show .showing-container img.showing {
+    position: relative;
+    z-index: 1;
+}
+
+/* ============================================================
+   Thumbnail loading progress
+   日間：填充 --bg（淺），遮罩 --text 半透明（深），文字 --bg
+   夜間：填充 --text（淺），遮罩 --bg 半透明（深），文字 --text
+   ============================================================ */
+.ib-thumb-progress {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 3;
+    opacity: 0;
+    transition: opacity 200ms ease-out;
+    border-radius: 4px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--text, #1a1a1a) 55%, transparent);
+}
+
+.ib-thumb-progress.is-active {
+    opacity: 1;
+}
+
+.ib-thumb-progress-fill {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 100%;
+    transform-origin: bottom center;
+    transform: scaleY(0);
+    background: linear-gradient(
+        to top,
+        color-mix(in srgb, var(--bg, #eaeaea) 90%, transparent) 0%,
+        color-mix(in srgb, var(--bg, #eaeaea) 55%, transparent) 100%
+    );
+    transition: transform 120ms linear;
+    will-change: transform;
+}
+
+.ib-thumb-progress-text {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--bg, #eaeaea);
+    text-shadow: 0 1px 3px color-mix(in srgb, var(--text, #000) 70%, transparent);
+    letter-spacing: 0.5px;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    transition: color 150ms ease;
+}
+
+body.theme-dark .ib-thumb-progress {
+    background: color-mix(in srgb, var(--bg, #000) 65%, transparent);
+}
+
+body.theme-dark .ib-thumb-progress-fill {
+    background: linear-gradient(
+        to top,
+        color-mix(in srgb, var(--text, #eaeaea) 90%, transparent) 0%,
+        color-mix(in srgb, var(--text, #eaeaea) 55%, transparent) 100%
+    );
+}
+
+body.theme-dark .ib-thumb-progress-text {
+    color: var(--text, #eaeaea);
+    text-shadow: 0 1px 3px color-mix(in srgb, var(--bg, #000) 70%, transparent);
+}
+
+/* ============================================================
    Mobile
    ============================================================ */
 @media (max-width: 30em) {
@@ -383,7 +483,6 @@
         max-width: 88%;
     }
 
-    /* Mobile: tighter spacing between the meta items */
     .ib-file-info .ib-meta-gap {
         width: 6px;
     }
@@ -420,22 +519,18 @@
         height: 18px;
         font-size: 12px;
     }
+
+    .ib-thumb-progress-text {
+        font-size: 10px;
+    }
 }
 
-/* ============================================================
-   Hide zoom buttons on portrait phones
-   (pinch gestures still work on the image)
-   ============================================================ */
 @media (max-width: 640px) and (orientation: portrait) {
     .ib-zoom-controls {
         display: none !important;
     }
 }
 
-/* ============================================================
-   Hide resolution / aspect ratio / megapixels
-   on portrait phones
-   ============================================================ */
 @media (max-width: 640px) and (orientation: portrait) {
     .ib-file-info .ib-meta-res,
     .ib-file-info .ib-meta-gap-res {
@@ -444,7 +539,7 @@
 }
 
 /* ============================================================
-   Dark theme overrides: use var(--text) for all plugin text
+   Dark theme overrides
    ============================================================ */
 body.theme-dark .ib-thumb-name,
 body.theme-dark .ib-file-info,
@@ -487,15 +582,4 @@ body.theme-dark .ib-zoom-btn:hover {
     background: color-mix(in srgb, var(--text, #eaeaea) 18%, transparent);
     color: var(--text, #eaeaea);
     border-color: color-mix(in srgb, var(--text, #eaeaea) 45%, transparent);
-}
-
-.file-show .showing-container {
-    position: relative;
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-    touch-action: pan-y pinch-zoom;
 }

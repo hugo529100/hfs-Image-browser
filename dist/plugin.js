@@ -1,4 +1,4 @@
-exports.version = 3.2;
+exports.version = 3.5;
 exports.apiRequired = 10.0;
 exports.repo = "Hug3O/Image-browser";
 exports.description = "Picasa-style image browser with bottom thumbnail strip.";

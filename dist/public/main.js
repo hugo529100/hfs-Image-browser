@@ -33,6 +33,17 @@
 
     const COLLAPSE_KEY = 'ib.collapsed';
 
+    // Progressive preview config (hardcoded, not user-configurable)
+    const PREVIEW = {
+        enabled: true,
+        fadeOutMs: 300,   // 縮圖淡出時間
+    };
+
+    // Thumbnail loading progress config
+    const PROGRESS = {
+        enabled: true,
+    };
+
     function loadCollapseState() {
         try {
             return localStorage.getItem(COLLAPSE_KEY) === '1';
@@ -565,6 +576,407 @@
     // Zoom end
     // ============================================================
 
+    // ============================================================
+    // Thumbnail loading progress
+    // 在當前 active 的縮圖框內顯示原圖下載百分比
+    // ============================================================
+    const progressState = {
+        xhr: null,
+        targetIndex: -1,
+        targetUrl: '',
+        el: null,          // .ib-thumb-progress
+        fillEl: null,      // .ib-thumb-progress-fill
+        textEl: null,      // .ib-thumb-progress-text
+        hideTimer: null,
+    };
+
+    function getProgressEls(cell) {
+        if (!cell) return null;
+        const el = cell.querySelector('.ib-thumb-progress');
+        if (!el) return null;
+        return {
+            el,
+            fillEl: el.querySelector('.ib-thumb-progress-fill'),
+            textEl: el.querySelector('.ib-thumb-progress-text'),
+        };
+    }
+
+    function resetProgressVisual() {
+        if (progressState.el) {
+            progressState.el.classList.remove('is-active');
+        }
+        if (progressState.fillEl) {
+            progressState.fillEl.style.transform = 'scaleY(0)';
+        }
+        if (progressState.textEl) {
+            progressState.textEl.textContent = '0%';
+        }
+        progressState.el = null;
+        progressState.fillEl = null;
+        progressState.textEl = null;
+        progressState.targetIndex = -1;
+        progressState.targetUrl = '';
+        if (progressState.hideTimer) {
+            clearTimeout(progressState.hideTimer);
+            progressState.hideTimer = null;
+        }
+    }
+
+    function abortProgress() {
+        if (progressState.xhr) {
+            try { progressState.xhr.abort(); } catch (e) { }
+            progressState.xhr = null;
+        }
+        resetProgressVisual();
+    }
+
+    /**
+     * 在指定 index 的縮圖上啟動進度條。
+     * 若原圖已在快取（showing.complete），直接不顯示。
+     */
+    function startProgressFor(index) {
+        if (!PROGRESS.enabled) return;
+        if (!mounted) return;
+        if (index < 0 || index >= state.images.length) return;
+
+        const img = state.images[index];
+        if (!img) return;
+
+        // 已載入完成（快取命中）→ 不顯示進度
+        const showing = getMainImage();
+        if (showing && showing.complete && showing.naturalWidth > 0) {
+            abortProgress();
+            return;
+        }
+
+        const cell = state.thumbEls.get(index);
+        if (!cell) return;
+
+        const els = getProgressEls(cell);
+        if (!els) return;
+
+        // 切換到新的目標 → 先 abort 舊的
+        if (progressState.xhr && progressState.targetUrl !== img.url) {
+            abortProgress();
+        }
+
+        progressState.el = els.el;
+        progressState.fillEl = els.fillEl;
+        progressState.textEl = els.textEl;
+        progressState.targetIndex = index;
+        progressState.targetUrl = img.url;
+
+        els.el.classList.add('is-active');
+        if (els.textEl) els.textEl.textContent = '0%';
+        if (els.fillEl) els.fillEl.style.transform = 'scaleY(0)';
+
+        // 若已有同 URL 的 XHR 在跑，不重複發
+        if (progressState.xhr && progressState.targetUrl === img.url) return;
+
+        // 發 XHR 追蹤進度
+        const xhr = new XMLHttpRequest();
+        progressState.xhr = xhr;
+
+        xhr.open('GET', img.url, true);
+        xhr.responseType = 'blob';
+
+        xhr.onprogress = (e) => {
+            if (progressState.xhr !== xhr) return;
+            let pct = 0;
+            if (e.lengthComputable && e.total > 0) {
+                pct = Math.round((e.loaded / e.total) * 100);
+            } else {
+                // 沒有 Content-Length：顯示不確定進度（用 received 遞增但封頂 99%）
+                pct = Math.min(99, Math.round(Math.log10(e.loaded + 10) * 20));
+            }
+            if (progressState.fillEl) {
+                progressState.fillEl.style.transform = `scaleY(${pct / 100})`;
+            }
+            if (progressState.textEl) {
+                progressState.textEl.textContent = pct + '%';
+            }
+        };
+
+        xhr.onload = () => {
+            if (progressState.xhr !== xhr) return;
+            if (progressState.fillEl) progressState.fillEl.style.transform = 'scaleY(1)';
+            if (progressState.textEl) progressState.textEl.textContent = '100%';
+            // 短暫停留後隱藏
+            scheduleProgressHide();
+            progressState.xhr = null;
+        };
+
+        xhr.onerror = () => {
+            if (progressState.xhr !== xhr) return;
+            // 失敗：直接隱藏
+            scheduleProgressHide(200);
+            progressState.xhr = null;
+        };
+
+        xhr.onabort = () => {
+            if (progressState.xhr === xhr) progressState.xhr = null;
+        };
+
+        try {
+            xhr.send();
+        } catch (e) {
+            progressState.xhr = null;
+            scheduleProgressHide(200);
+        }
+    }
+
+    function scheduleProgressHide(delay) {
+        if (progressState.hideTimer) clearTimeout(progressState.hideTimer);
+        const d = (delay === undefined) ? 250 : delay;
+        progressState.hideTimer = setTimeout(() => {
+            progressState.hideTimer = null;
+            if (progressState.el) progressState.el.classList.remove('is-active');
+        }, d);
+    }
+
+    /**
+     * 結束進度條（原圖 load / error / 中斷時呼叫）。
+     * 若 xhr 還沒完成，abort；視覺上 100% 停留 250ms 後淡出。
+     */
+    function finishProgress() {
+        if (progressState.xhr) {
+            try { progressState.xhr.abort(); } catch (e) { }
+            progressState.xhr = null;
+        }
+        if (progressState.fillEl) progressState.fillEl.style.transform = 'scaleY(1)';
+        if (progressState.textEl) progressState.textEl.textContent = '100%';
+        scheduleProgressHide(250);
+    }
+    // ============================================================
+    // Thumbnail loading progress end
+    // ============================================================
+
+    // ============================================================
+    // Progressive preview (LQIP)
+    // 上層：縮略圖 <img>（?get=thumb），先顯示
+    // 下層：原圖 <img class="showing">，載入後直接顯示，縮圖淡出
+    //
+    // 可靠性設計：
+    // 1. 不依賴 showing.complete（不可靠）→ 輪詢 src 直到變成目標 URL
+    // 2. finalize 捕獲自己的 previewImgEl / timer，不依賴外層可變變數
+    // 3. 有 8s 保險計時器，避免 load 永不觸發時縮圖永久卡住
+    // ============================================================
+    let previewImgEl = null;        // 上層縮略圖 <img>
+    let previewBoundShowing = null; // 目前監聽的原圖節點
+    let previewLoadHandler = null;
+    let previewErrorHandler = null;
+    let previewCurrentUrl = '';     // 目標原圖 URL（normalized，不是 thumbUrl）
+    let previewPollTimer = null;
+    let previewSafetyTimer = null;
+
+    function getShowingContainerEl() {
+        const img = getMainImage();
+        if (!img) return null;
+        return img.closest('.showing-container') || img.parentElement || null;
+    }
+
+    function stopPreviewTimers() {
+        if (previewPollTimer) {
+            clearInterval(previewPollTimer);
+            previewPollTimer = null;
+        }
+        if (previewSafetyTimer) {
+            clearTimeout(previewSafetyTimer);
+            previewSafetyTimer = null;
+        }
+    }
+
+    function clearProgressivePreview() {
+        stopPreviewTimers();
+        abortProgress();
+
+        if (previewBoundShowing) {
+            if (previewLoadHandler) {
+                try { previewBoundShowing.removeEventListener('load', previewLoadHandler); } catch (e) { }
+            }
+            if (previewErrorHandler) {
+                try { previewBoundShowing.removeEventListener('error', previewErrorHandler); } catch (e) { }
+            }
+        }
+        previewBoundShowing = null;
+        previewLoadHandler = null;
+        previewErrorHandler = null;
+
+        if (previewImgEl) {
+            previewImgEl.remove();
+            previewImgEl = null;
+        }
+        previewCurrentUrl = '';
+    }
+
+    function normalizeUrl(u) {
+        if (!u) return '';
+        try {
+            // 只取 pathname + search，忽略 origin / hash
+            const url = new URL(u, location.origin);
+            return url.pathname + url.search;
+        } catch (e) {
+            return u;
+        }
+    }
+
+    /**
+     * 武裝漸進式預覽。
+     * @param {object} img state.images 裡的物件（含 url / thumbUrl）
+     */
+    function armProgressivePreview(img) {
+        if (!PREVIEW.enabled) return;
+        if (!img || !img.thumbUrl || !img.url) return;
+
+        const showing = getMainImage();
+        if (!showing) return;
+
+        const targetNorm = normalizeUrl(img.url);
+
+        // 若已經武裝同一張（同 target URL）→ 不重複
+        if (previewBoundShowing === showing && previewCurrentUrl === targetNorm) return;
+
+        // 先清掉舊的
+        clearProgressivePreview();
+
+        const container = getShowingContainerEl();
+        if (!container) return;
+
+        // 確保容器是定位容器
+        try {
+            if (getComputedStyle(container).position === 'static') {
+                container.style.position = 'relative';
+            }
+        } catch (e) { }
+
+        // 建立上層縮圖（捕獲到閉包，後續操作都用這個變數）
+        const pImg = document.createElement('img');
+        pImg.className = 'ib-progressive-preview';
+        pImg.decoding = 'async';
+        pImg.draggable = false;
+        pImg.alt = '';
+        pImg.src = img.thumbUrl;
+        pImg.style.opacity = '1';
+        if (showing.parentNode === container) {
+            container.insertBefore(pImg, showing.nextSibling);
+        } else {
+            container.appendChild(pImg);
+        }
+        previewImgEl = pImg;
+        previewCurrentUrl = targetNorm;
+        previewBoundShowing = showing;
+
+        // 原圖先隱藏
+        showing.style.transition = 'none';
+        showing.style.opacity = '0';
+
+        // 在縮圖上啟動進度條（若原圖尚未載入完成）
+        startProgressFor(state.currentIndex);
+
+        // 用閉包捕獲所有需要的狀態，避免被後續 clearProgressivePreview 破壞
+        const boundShowing = showing;
+        const boundPreviewImg = pImg;
+        const boundTargetNorm = targetNorm;
+        let finalized = false;
+
+        const finalize = () => {
+            if (finalized) return;
+            finalized = true;
+
+            // 移除監聽
+            try { boundShowing.removeEventListener('load', onLoad); } catch (e) { }
+            try { boundShowing.removeEventListener('error', onLoad); } catch (e) { }
+            stopPreviewTimers();
+
+            // 結束進度條
+            finishProgress();
+
+            // 原圖直接顯示（無過渡，避免與縮圖淡出重疊產生雙重動畫）
+            boundShowing.style.transition = 'none';
+            boundShowing.style.opacity = '1';
+            boundShowing.classList.remove('ib-fading');
+
+            // 縮圖淡出 → 移除
+            if (boundPreviewImg && boundPreviewImg.parentNode) {
+                boundPreviewImg.style.transition = `opacity ${PREVIEW.fadeOutMs}ms ease-out`;
+                boundPreviewImg.style.opacity = '0';
+                setTimeout(() => {
+                    if (boundPreviewImg.parentNode) boundPreviewImg.remove();
+                }, PREVIEW.fadeOutMs + 50);
+            }
+            if (previewImgEl === boundPreviewImg) previewImgEl = null;
+
+            // 清 transition，讓 applyZoomTransform 接管
+            setTimeout(() => {
+                if (boundShowing && boundShowing.style.transition) {
+                    boundShowing.style.transition = '';
+                }
+            }, PREVIEW.fadeOutMs + 60);
+
+            if (previewBoundShowing === boundShowing) {
+                previewBoundShowing = null;
+                previewLoadHandler = null;
+                previewErrorHandler = null;
+                previewCurrentUrl = '';
+            }
+        };
+
+        const onLoad = () => finalize();
+        previewLoadHandler = onLoad;
+        previewErrorHandler = onLoad;
+
+        const tryAttach = () => {
+            // 若 showing 已換（HFS 重建節點），finalize 直接結束
+            const cur = getMainImage();
+            if (cur !== boundShowing) {
+                // 節點已換，舊 showing 不會再有 load，直接 finalize（清掉自己的縮圖）
+                finalize();
+                return true;
+            }
+
+            const curNorm = normalizeUrl(boundShowing.getAttribute('src') || '');
+
+            // 目標 src 已就位 → 掛監聽
+            if (curNorm === boundTargetNorm) {
+                // 先移除再添加，避免重複
+                boundShowing.removeEventListener('load', onLoad);
+                boundShowing.removeEventListener('error', onLoad);
+                boundShowing.addEventListener('load', onLoad, { once: true });
+                boundShowing.addEventListener('error', onLoad, { once: true });
+
+                // 若已經載入完成（快取命中）→ 下一幀 finalize
+                if (boundShowing.complete && boundShowing.naturalWidth > 0) {
+                    requestAnimationFrame(finalize);
+                }
+                return true; // 停止輪詢
+            }
+            return false;
+        };
+
+        // 立即嘗試一次；若 src 還沒換，開始輪詢
+        if (!tryAttach()) {
+            stopPreviewTimers();
+            previewPollTimer = setInterval(() => {
+                tryAttach();
+                if (!previewPollTimer) return;
+                // 若 finalized 已 true，停止
+                if (finalized) {
+                    clearInterval(previewPollTimer);
+                    previewPollTimer = null;
+                }
+            }, 50);
+
+            // 保險：8 秒後無論如何強制 finalize
+            previewSafetyTimer = setTimeout(() => {
+                previewSafetyTimer = null;
+                finalize();
+            }, 8000);
+        }
+    }
+    // ============================================================
+    // Progressive preview end
+    // ============================================================
+
     function fadeOutMainImage() {
         const showing = document.querySelector('.file-show img.showing');
         if (!showing) return;
@@ -580,6 +992,17 @@
     function interruptMainImage() {
         if (!BUILTIN.enableInterruptOnNavigate) return;
 
+        // 若預覽已武裝但原圖被中斷，無條件清掉預覽並還原 opacity。
+        // 不用 !showing.complete 判斷（complete 不可靠）。
+        if (previewBoundShowing) {
+            clearProgressivePreview();
+            const showing = document.querySelector('.file-show img.showing');
+            if (showing) {
+                showing.style.opacity = '';
+                showing.style.transition = '';
+            }
+        }
+
         const showing = document.querySelector('.file-show img.showing');
         if (showing) {
             showing.onload = null;
@@ -594,6 +1017,7 @@
             showingContainer.querySelectorAll('img').forEach(im => {
                 if (im === showing) return;
                 if (im.closest('.ib-strip-container')) return;
+                if (im.classList.contains('ib-progressive-preview')) return;
                 im.onload = null;
                 im.onerror = null;
                 if (im.src && !im.src.startsWith('data:')) {
@@ -853,6 +1277,9 @@
 
         const diff = index - state.currentIndex;
 
+        // 切图前清掉上一张的预览，避免残留
+        clearProgressivePreview();
+
         fadeOutMainImage();
 
         if (BUILTIN.enableInterruptOnNavigate) {
@@ -870,6 +1297,15 @@
         }
 
         updateActive(index, true);
+
+        // 明確武裝目標圖的漸進式預覽
+        const targetImg = state.images[index];
+        if (targetImg) {
+            // 用 rAF 等 HFS 把 showing.src 換好後再武裝
+            requestAnimationFrame(() => {
+                armProgressivePreview(targetImg);
+            });
+        }
 
         requestAnimationFrame(() => {
             fadeInMainImage();
@@ -1366,6 +1802,15 @@
         im.src = img.thumbUrl;
 
         frame.appendChild(im);
+
+        // 進度條（從底部往上推）
+        const progress = document.createElement('div');
+        progress.className = 'ib-thumb-progress';
+        progress.innerHTML =
+            '<div class="ib-thumb-progress-fill"></div>' +
+            '<div class="ib-thumb-progress-text">0%</div>';
+        frame.appendChild(progress);
+
         cell.appendChild(frame);
 
         const nameEl = document.createElement('div');
@@ -1708,6 +2153,11 @@
             setTimeout(() => {
                 detectJumpMode();
             }, 500);
+
+            // 初次挂载后武装预览（若原图尚未载入完成）
+            if (state.images[idx]) {
+                armProgressivePreview(state.images[idx]);
+            }
         } finally {
             mountInProgress = false;
         }
@@ -1733,6 +2183,8 @@
     }
 
     function unmount() {
+        clearProgressivePreview();
+        abortProgress();
         resetZoom();
         unbindZoomDrag();
         zoomState.scale = 1;
@@ -1784,6 +2236,9 @@
 
         const viewer = document.querySelector('.file-show');
         if (!viewer) return;
+
+        clearProgressivePreview();
+        abortProgress();
 
         const keepIndex = state.currentIndex;
         const keepCollapsed = state.collapsed;
@@ -1852,6 +2307,11 @@
         if (main && BUILTIN.enableWheelSwitch) {
             main.addEventListener('wheel', onWheel, { passive: false });
             state.mainEl = main;
+        }
+
+        // 重新武装预览
+        if (state.images[keepIndex]) {
+            armProgressivePreview(state.images[keepIndex]);
         }
     }
 
@@ -1935,6 +2395,8 @@
                         mount();
                     }, BUILTIN.mountDelayMs);
                 } else if (mounted && !pendingUnmount) {
+                    // 非图片 → 清掉预览
+                    clearProgressivePreview();
                     pendingUnmount = setTimeout(() => {
                         pendingUnmount = null;
                         if (mounted) {
@@ -1983,6 +2445,8 @@
         state,
         config: C,
         builtin: BUILTIN,
+        preview: PREVIEW,
+        progress: PROGRESS,
         navigateTo, navigateNext, navigatePrev,
         detectNextButton, detectJumpMode,
         getNavButtons, findCurrentIndex,
@@ -1993,6 +2457,8 @@
         softReloadBrowser,
         toggleCollapse,
         zoomImage, resetZoom, zoomState,
+        clearProgressivePreview, armProgressivePreview,
+        startProgressFor, finishProgress, abortProgress,
         resetDetect: () => { state.nextButtonSide = 'right'; state.jumpMode = null; },
         refresh: () => { state.listFetchedFor = ''; schedule(); },
     };
