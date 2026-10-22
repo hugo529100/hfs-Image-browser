@@ -1,4 +1,4 @@
-exports.version = 3.5;
+exports.version = 3.7;
 exports.apiRequired = 10.0;
 exports.repo = "Hug3O/Image-browser";
 exports.description = "Picasa-style image browser with bottom thumbnail strip.";
@@ -68,9 +68,12 @@ exports.config = {
     // Preload
     // ============================================================
     preloadCount: {
-        type: 'number', defaultValue: 3, min: 1, max: 10,
+        type: 'number', defaultValue: 0, min: 0, max: 10,
         label: "Preload Adjacent Images",
-        helperText: "How many original images to preload on each side.",
+        helperText: "How many original images to preload on each side. " +
+                    "0 = no preloading (recommended: thumbnails already " +
+                    "provide a fast 800px preview, so skipping preload keeps " +
+                    "the next image's bandwidth free and switching feels snappier).",
         frontend: true
     }
 };

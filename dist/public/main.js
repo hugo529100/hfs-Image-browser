@@ -33,6 +33,10 @@
 
     const COLLAPSE_KEY = 'ib.collapsed';
 
+    // 1x1 透明 GIF，用于中断加载时替换 src，避免出现裂图白框
+    const BLANK_PIXEL =
+        'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
     // Progressive preview config (hardcoded, not user-configurable)
     const PREVIEW = {
         enabled: true,
@@ -40,6 +44,8 @@
     };
 
     // Thumbnail loading progress config
+    // 800px 縮圖已能秒顯，進度條的 XHR 會重複下載整張原圖、與主圖搶頻寬，
+    // 反而拖慢切圖霎時速度，故預設關閉。
     const PROGRESS = {
         enabled: true,
     };
@@ -63,7 +69,7 @@
     thumbnailSizeUnit: 'vh',
     mobileThumbnailSize: 6,
     mobileThumbnailSizeUnit: 'vh',
-    preloadCount: 3,
+    preloadCount: 0,
     };
 
     function loadConfig() {
@@ -227,7 +233,7 @@
         jumpMode: null,
         lastRenderIndex: -1,
         lastSizeKey: '',
-        lastOrientationKey: '',
+        lastAspectKey: '',
         mountedAt: 0,
         metaCache: new Map(),
         resizeReloadTimer: null,
@@ -821,7 +827,7 @@
     }
 
     /**
-     * 武裝漸進式預覽。
+     * 漸進式預覽。
      * @param {object} img state.images 裡的物件（含 url / thumbUrl）
      */
     function armProgressivePreview(img) {
@@ -1007,8 +1013,10 @@
         if (showing) {
             showing.onload = null;
             showing.onerror = null;
+            // 方案 A：不設 src=''（會出現裂圖白框），改設 1x1 透明 GIF。
+            // 透明 GIF 不會畫出破圖圖示，也不會被瀏覽器當成載入失敗。
             if (showing.src && !showing.src.startsWith('data:')) {
-                try { showing.src = ''; } catch (e) { }
+                try { showing.src = BLANK_PIXEL; } catch (e) { }
             }
         }
 
@@ -1020,8 +1028,9 @@
                 if (im.classList.contains('ib-progressive-preview')) return;
                 im.onload = null;
                 im.onerror = null;
+                // 同样改用透明像素，避免裂图白框
                 if (im.src && !im.src.startsWith('data:')) {
-                    try { im.src = ''; } catch (e) { }
+                    try { im.src = BLANK_PIXEL; } catch (e) { }
                 }
             });
         }
@@ -1168,7 +1177,9 @@
 
     function preloadAround(index) {
         if (index < 0) return;
-        const N = +C.preloadCount;
+        // 显式处理 0 / 负数 / NaN：0 = 不预加载
+        const N = Math.max(0, Math.floor(+C.preloadCount) || 0);
+        if (N === 0) return;
         for (let off = -N; off <= N; off++) {
             if (off === 0) continue;
             const img = state.images[index + off];
@@ -2126,7 +2137,7 @@
 
             const size = getEffectiveThumbSize();
             state.lastSizeKey = `${size.h}x${size.gap}`;
-            state.lastOrientationKey = getOrientationKey();
+            state.lastAspectKey = getAspectKey();
 
             applyCollapseState();
             updateActive(idx, false);
@@ -2182,17 +2193,54 @@
         unbindWheelAll();
     }
 
+    /**
+     * 彻底清理主图上可能残留的内联样式与预览节点，
+     * 避免再次进入图片浏览器时旧样式导致版面异常。
+     */
+    function cleanupMainImageInlineStyles() {
+        const showing = document.querySelector('.file-show img.showing');
+        if (showing) {
+            showing.style.transform = '';
+            showing.style.transformOrigin = '';
+            showing.style.transition = '';
+            showing.style.opacity = '';
+            showing.style.cursor = '';
+            showing.style.willChange = '';
+            showing.style.userSelect = '';
+            showing.style.touchAction = '';
+            showing.classList.remove('ib-fading');
+        }
+
+        const container = document.querySelector('.file-show .showing-container');
+        if (container) {
+            container.style.touchAction = '';
+            container.querySelectorAll('.ib-progressive-preview').forEach(el => el.remove());
+        }
+
+        // 兜底：移除文件视图中任何残留的渐进式预览节点
+        document.querySelectorAll('.file-show .ib-progressive-preview').forEach(el => el.remove());
+    }
+
     function unmount() {
         clearProgressivePreview();
         abortProgress();
         resetZoom();
         unbindZoomDrag();
+
+        // 兜底解绑 window 级监听（防止 bindZoomDrag 中途状态异常时残留）
+        window.removeEventListener('pointermove', onZoomPointerMove);
+        window.removeEventListener('pointerup', onZoomPointerUp);
+
         zoomState.scale = 1;
         zoomState.translateX = 0;
         zoomState.translateY = 0;
         zoomState.dragging = false;
+        zoomState.lastTouchDist = 0;
 
         unbindWheelFromMain();
+
+        // 清理主图内联样式与残留预览节点（彻底释放，避免再次进入时版面异常）
+        cleanupMainImageInlineStyles();
 
         document.querySelectorAll('.ib-strip-container').forEach(el => el.remove());
 
@@ -2210,12 +2258,15 @@
         state.nextButtonSide = 'right';
         state.lastRenderIndex = -1;
         state.lastSizeKey = '';
-        state.lastOrientationKey = '';
+        state.lastAspectKey = '';
         state.images = [];
         state.currentIndex = -1;
         state.listFetchedFor = '';
         state.lastKnownName = '';
         state.mountedAt = 0;
+        state.preloadCache.clear();
+        state.preloadPending.clear();
+        state.metaCache.clear();
         mounted = false;
         if (state.resizeReloadTimer) {
             clearTimeout(state.resizeReloadTimer);
@@ -2229,7 +2280,7 @@
     /**
      * 软重载：保留 state.images / currentIndex / collapsed 等资料，
      * 只拆掉 strip DOM，用新的 innerWidth / innerHeight 重新建立。
-     * 用于手机竖屏 <-> 横屏切换等「环境级」变化。
+     * 用于比例变化（宽高比）时的界面重载。
      */
     function softReloadBrowser() {
         if (!mounted || !state.stripEl) return;
@@ -2292,7 +2343,7 @@
 
         const size = getEffectiveThumbSize();
         state.lastSizeKey = `${size.h}x${size.gap}`;
-        state.lastOrientationKey = getOrientationKey();
+        state.lastAspectKey = getAspectKey();
         state.mountedAt = Date.now();
 
         applyCollapseState();
@@ -2315,12 +2366,15 @@
         }
     }
 
-    function getOrientationKey() {
+    /**
+     * 只关心"宽高比"，不含精确像素。
+     * 保留 3 位小数，避免轻微像素抖动导致误判。
+     */
+    function getAspectKey() {
         const w = window.innerWidth;
         const h = window.innerHeight;
-        const isMobile = w <= BUILTIN.mobileBreakpoint;
-        const landscape = w > h;
-        return `${isMobile ? 'M' : 'D'}-${landscape ? 'L' : 'P'}-${w}x${h}`;
+        if (!w || !h) return '';
+        return (w / h).toFixed(3);
     }
 
     function onResize() {
@@ -2328,11 +2382,12 @@
 
         const size = getEffectiveThumbSize();
         const sizeKey = `${size.h}x${size.gap}`;
-        const orientKey = getOrientationKey();
+        const aspectKey = getAspectKey();
 
+        // 只要"缩略图尺寸"或"宽高比"任一变化 → 触发重载
         const changed =
             state.lastSizeKey !== sizeKey ||
-            state.lastOrientationKey !== orientKey;
+            state.lastAspectKey !== aspectKey;
 
         if (!changed) {
             if (state.currentIndex >= 0) centerOnIndex(state.currentIndex, false);
@@ -2340,9 +2395,9 @@
         }
 
         state.lastSizeKey = sizeKey;
-        state.lastOrientationKey = orientKey;
+        state.lastAspectKey = aspectKey;
 
-        // debounce：手机旋转时 resize / orientationchange 会连续触发多次，
+        // debounce：手机旋转 / 拖拽窗口时 resize 会连续触发多次，
         // 等 150ms 让浏览器稳定后再重建，避免用旧尺寸建好又立刻被拆掉。
         if (state.resizeReloadTimer) clearTimeout(state.resizeReloadTimer);
         state.resizeReloadTimer = setTimeout(() => {

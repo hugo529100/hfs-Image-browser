@@ -105,20 +105,20 @@
     align-items: stretch;
     cursor: pointer;
     opacity: 0.8;
-    transform: scale(0.94);
-    transition: opacity 0.2s ease, transform 0.2s ease;
+    transform: none;
+    transition: opacity 0.2s ease;
     user-select: none;
     -webkit-tap-highlight-color: transparent;
 }
 
 .ib-thumb.ib-active {
     opacity: 1;
-    transform: scale(1.04);
+    transform: none;
 }
 
 .ib-thumb.ib-near {
     opacity: 0.95;
-    transform: scale(0.98);
+    transform: none;
 }
 
 .ib-thumb img {
@@ -394,6 +394,10 @@
 .file-show .showing-container img.showing {
     position: relative;
     z-index: 1;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center;
 }
 
 /* ============================================================
