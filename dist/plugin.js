@@ -1,7 +1,7 @@
-exports.version = 3.7;
+exports.version = 4.0;
 exports.apiRequired = 10.0;
 exports.repo = "Hug3O/Image-browser";
-exports.description = "Picasa-style image browser with bottom thumbnail strip.";
+exports.description = "High-efficiency Picasa-style image browser with thumbnail strip, progressive preview, and smart deferred loading.";
 exports.depend = [{ "repo": "rejetto/thumbnails", "version": 4 }]
 exports.frontend_js = ['main.js'];
 exports.frontend_css = ['style.css'];

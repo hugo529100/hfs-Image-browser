@@ -328,7 +328,6 @@
    Main image fade
    ============================================================ */
 .file-show img.showing {
-    transition: opacity var(--ib-fade-in, 500ms) ease-in-out;
     will-change: opacity;
     backface-visibility: hidden;
 }
@@ -586,4 +585,134 @@ body.theme-dark .ib-zoom-btn:hover {
     background: color-mix(in srgb, var(--text, #eaeaea) 18%, transparent);
     color: var(--text, #eaeaea);
     border-color: color-mix(in srgb, var(--text, #eaeaea) 45%, transparent);
+}
+
+/* ============================================================
+   Huge image countdown overlay
+   ============================================================ */
+.file-show .showing-container .ib-huge-overlay {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 16px 20px calc(16px + env(safe-area-inset-bottom, 0px));
+    background: linear-gradient(
+        to top,
+        color-mix(in srgb, var(--bg, #000) 85%, transparent) 0%,
+        color-mix(in srgb, var(--bg, #000) 55%, transparent) 60%,
+        color-mix(in srgb, var(--bg, #000) 0%, transparent) 100%
+    );
+    color: var(--text, #fff);
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    animation: ib-huge-fade-in 0.25s ease-out;
+}
+
+@keyframes ib-huge-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+.file-show .showing-container .ib-huge-countdown {
+    font-size: 42px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--text, #fff);
+    animation: ib-huge-blink 1s ease-in-out infinite;
+    font-variant-numeric: tabular-nums;
+}
+
+.file-show .showing-container .ib-huge-text {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    color: var(--text, #fff);
+}
+
+.file-show .showing-container .ib-huge-hint {
+    font-size: 11px;
+    color: color-mix(in srgb, var(--text, #fff) 70%, transparent);
+    letter-spacing: 0.3px;
+}
+
+@keyframes ib-huge-blink {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.55; transform: scale(0.94); }
+}
+
+/* ============================================================
+   Light theme override
+   ============================================================ */
+body:not(.theme-dark) .file-show .showing-container .ib-huge-overlay {
+    background: linear-gradient(
+        to top,
+        color-mix(in srgb, var(--text, #1a1a1a) 55%, transparent) 0%,
+        color-mix(in srgb, var(--text, #1a1a1a) 30%, transparent) 60%,
+        color-mix(in srgb, var(--text, #1a1a1a) 0%, transparent) 100%
+    );
+    color: var(--bg, #fff);
+}
+
+body:not(.theme-dark) .file-show .showing-container .ib-huge-countdown {
+    color: var(--bg, #fff);
+}
+
+body:not(.theme-dark) .file-show .showing-container .ib-huge-text {
+    color: var(--bg, #fff);
+}
+
+body:not(.theme-dark) .file-show .showing-container .ib-huge-hint {
+    color: color-mix(in srgb, var(--bg, #fff) 75%, transparent);
+}
+
+/* ============================================================
+   Dark theme override
+   ============================================================ */
+body.theme-dark .file-show .showing-container .ib-huge-overlay {
+    background: linear-gradient(
+        to top,
+        color-mix(in srgb, var(--bg, #000) 85%, transparent) 0%,
+        color-mix(in srgb, var(--bg, #000) 55%, transparent) 60%,
+        color-mix(in srgb, var(--bg, #000) 0%, transparent) 100%
+    );
+    color: var(--text, #eaeaea);
+}
+
+body.theme-dark .file-show .showing-container .ib-huge-countdown {
+    color: var(--text, #eaeaea);
+}
+
+body.theme-dark .file-show .showing-container .ib-huge-text {
+    color: var(--text, #eaeaea);
+}
+
+body.theme-dark .file-show .showing-container .ib-huge-hint {
+    color: color-mix(in srgb, var(--text, #eaeaea) 70%, transparent);
+}
+
+@media (max-width: 640px) {
+    .file-show .showing-container .ib-huge-countdown {
+        font-size: 34px;
+    }
+    .file-show .showing-container .ib-huge-text {
+        font-size: 13px;
+    }
+    .file-show .showing-container .ib-huge-overlay {
+        padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px));
+    }
+}
+
+.file-show .main > .nav,
+.file-show .showing-container > .nav,
+.file-show > .contain > .main > .nav {
+    display: none !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
 }
