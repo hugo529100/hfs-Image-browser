@@ -1,4 +1,4 @@
-exports.version = 4.0;
+exports.version = 4.4;
 exports.apiRequired = 10.0;
 exports.repo = "Hug3O/Image-browser";
 exports.description = "High-efficiency Picasa-style image browser with thumbnail strip, progressive preview, and smart deferred loading.";
@@ -7,10 +7,66 @@ exports.frontend_js = ['main.js'];
 exports.frontend_css = ['style.css'];
 
 exports.config = {
-    // ============================================================
-    // Thumbnail size (desktop)
-    // ============================================================
+    // ============================================
+    // === Configuration Group Selector ===
+    // ============================================
+    config_tab: {
+        type: 'select',
+        defaultValue: 'large',
+        options: {
+            '1. Large Images': 'large',
+            '2. Thumbnails': 'thumbs'
+        },
+        label: "Configuration Category",
+        helperText: "Select a category to view and edit settings.",
+        frontend: true
+    },
+
+    // ============================================
+    // === 1. Large Images ===
+    // ============================================
+    largeImagesHint: {
+        showIf: x => x.config_tab === 'large',
+        type: 'select',
+        defaultValue: 'ok',
+        options: [
+            { value: 'ok', label: 'About temporary preview quality...' }
+        ],
+        label: "Temporary preview quality",
+         helperText: "For a sharper temporary preview, in the 'thumbnails' plugin " +
+                    "raise 'pixels' to 600 or above, turn 'EXIF' OFF, then clear " +
+                    "the thumbnail cache and let thumbnails regenerate. The image " +
+                    "browser reuses those ?get=thumb images as its progressive " +
+                    "preview, so this directly improves temporary preview clarity.",
+        frontend: true
+    },
+
+    hugeImageThresholdMb: {
+        showIf: x => x.config_tab === 'large',
+        type: 'number', defaultValue: 6, min: 1, max: 4096,
+        label: "Large Image Threshold (MB)",
+        helperText: "Images at or above this size (MB) will show a countdown " +
+                    "overlay before the original is loaded. Keep this in sync with " +
+                    "rejetto/thumbnails' own huge-image threshold if you use it. " +
+                    "Default 8 MB.",
+        frontend: true
+    },
+
+    hugeCountdownSeconds: {
+        showIf: x => x.config_tab === 'large',
+        type: 'number', defaultValue: 3, min: 1, max: 60,
+        label: "Large Image Countdown (seconds)",
+        helperText: "Countdown shown before loading an image whose size is at " +
+                    "or above 'Large Image Threshold'. Applies uniformly to all " +
+                    "large images. Default 3 seconds.",
+        frontend: true
+    },
+
+    // ============================================
+    // === 2. Thumbnails ===
+    // ============================================
     thumbnailSize: {
+        showIf: x => x.config_tab === 'thumbs',
         type: 'number', defaultValue: 54, min: 1, max: 200,
         label: "Thumbnail Size (desktop)",
         helperText: "Height of each thumbnail in the strip (desktop only). " +
@@ -19,10 +75,8 @@ exports.config = {
         frontend: true
     },
 
-    // ============================================================
-    // Thumbnail size unit (desktop)
-    // ============================================================
     thumbnailSizeUnit: {
+        showIf: x => x.config_tab === 'thumbs',
         type: 'select',
         defaultValue: 'px',
         options: [
@@ -35,10 +89,8 @@ exports.config = {
         frontend: true
     },
 
-    // ============================================================
-    // Thumbnail size (mobile, independent)
-    // ============================================================
     mobileThumbnailSize: {
+        showIf: x => x.config_tab === 'thumbs',
         type: 'number', defaultValue: 48, min: 1, max: 160,
         label: "Thumbnail Size (mobile)",
         helperText: "Height of each thumbnail in the strip on mobile screens " +
@@ -48,10 +100,8 @@ exports.config = {
         frontend: true
     },
 
-    // ============================================================
-    // Thumbnail size unit (mobile)
-    // ============================================================
     mobileThumbnailSizeUnit: {
+        showIf: x => x.config_tab === 'thumbs',
         type: 'select',
         defaultValue: 'px',
         options: [
@@ -62,21 +112,18 @@ exports.config = {
         label: "Mobile Thumbnail Size Unit",
         helperText: "Unit for the mobile thumbnail height. Choose px, vh, or vw.",
         frontend: true
-    },
-
-    // ============================================================
-    // Preload
-    // ============================================================
-    preloadCount: {
-        type: 'number', defaultValue: 0, min: 0, max: 10,
-        label: "Preload Adjacent Images",
-        helperText: "How many original images to preload on each side. " +
-                    "0 = no preloading (recommended: thumbnails already " +
-                    "provide a fast 800px preview, so skipping preload keeps " +
-                    "the next image's bandwidth free and switching feels snappier).",
-        frontend: true
     }
 };
+
+exports.configDialog = {
+    maxWidth: 'md',
+};
+
+exports.changelog = [
+    { version: 4.4, message: "Removed preloadCount (conflicts with gate/countdown throttling)." },
+    { version: 4.3, message: "Rearranged config dialog: 'Large Images' (threshold + countdown) first, 'Thumbnails' second." },
+    { version: 4.2, message: "Added tabbed configuration dialog (General / Huge Images)." },
+];
 
 exports.init = api => {
     return {

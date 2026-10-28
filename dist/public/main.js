@@ -38,15 +38,6 @@
         { minSize: 3  * 1024 * 1024, delay: 1000 },
     ];
 
-    const HUGE_IMAGE_THRESHOLD = 20 * 1024 * 1024;
-
-    const HUGE_COUNTDOWN_TIERS = [
-        { minSize: 100 * 1024 * 1024, delay: 5000 },
-        { minSize: 50  * 1024 * 1024, delay: 5000 },
-        { minSize: 30  * 1024 * 1024, delay: 5000 },
-        { minSize: 20  * 1024 * 1024, delay: 3000 },
-    ];
-
     const DRAG_SWITCH_MIN_INTERVAL_MS = 60;
 
     const COLLAPSE_KEY = 'ib.collapsed';
@@ -56,7 +47,6 @@
 
     const PREVIEW = {
         enabled: true,
-        fadeOutMs: 300,
     };
 
     const PROGRESS = {
@@ -82,7 +72,8 @@
         thumbnailSizeUnit: 'vh',
         mobileThumbnailSize: 6,
         mobileThumbnailSizeUnit: 'vh',
-        preloadCount: 0,
+        hugeImageThresholdMb: 8,
+        hugeCountdownSeconds: 3,
     };
 
     function loadConfig() {
@@ -93,6 +84,16 @@
                 if (raw[k] !== undefined && raw[k] !== null) C[k] = raw[k];
             });
         } catch (e) { }
+    }
+
+    function getHugeThresholdBytes() {
+        const mb = Math.max(1, Math.floor(+C.hugeImageThresholdMb) || 8);
+        return mb * 1024 * 1024;
+    }
+
+    function getHugeCountdownMs() {
+        const sec = Math.max(1, Math.floor(+C.hugeCountdownSeconds) || 3);
+        return sec * 1000;
     }
 
     function resolveThumbHeight(value, unit) {
@@ -224,8 +225,6 @@
         showingContainerEl: null,
         collapsed: false,
         lastWheelTime: 0,
-        preloadCache: new Map(),
-        preloadPending: new Set(),
         listFetchedFor: '',
         listFetching: false,
         nextButtonSide: 'right',
@@ -245,46 +244,30 @@
         pendingLoadIndex: -1,
     };
 
-    const mainImage = {
-        xhr: null,
-        url: '',
-        objUrl: null,
-    };
-
     const hugeState = {
         el: null,
         timer: null,
         deadline: 0,
         targetIndex: -1,
         countdownMs: 0,
+        parkedSrc: '',
+        gateClosed: false,
+        gateIndex: -1,
     };
 
-    function revokeMainObjUrl() {
-        if (mainImage.objUrl) {
-            try { URL.revokeObjectURL(mainImage.objUrl); } catch (e) { }
-            mainImage.objUrl = null;
-        }
+    function closeGate(index) {
+        hugeState.gateClosed = true;
+        hugeState.gateIndex = index;
     }
 
-    function abortMainImageXhr() {
-        if (mainImage.xhr) {
-            try { mainImage.xhr.abort(); } catch (e) { }
-            mainImage.xhr = null;
-        }
-        mainImage.url = '';
-    }
-
-    function getHugeCountdownMs(img) {
-        if (!img) return 3000;
-        const size = (img.size !== null && img.size !== undefined) ? img.size : 0;
-        for (const tier of HUGE_COUNTDOWN_TIERS) {
-            if (size >= tier.minSize) return tier.delay;
-        }
-        return 3000;
+    function openGate(index) {
+        hugeState.gateClosed = false;
+        hugeState.gateIndex = index;
     }
 
     function clearHugeOverlay() {
         if (hugeState.timer) {
+            clearTimeout(hugeState.timer);
             clearInterval(hugeState.timer);
             hugeState.timer = null;
         }
@@ -295,6 +278,7 @@
         hugeState.deadline = 0;
         hugeState.targetIndex = -1;
         hugeState.countdownMs = 0;
+        // 不清 gateClosed / gateIndex / parkedSrc：由 openGate/closeGate 显式控制
     }
 
     function startHugeCountdown(index) {
@@ -303,9 +287,30 @@
 
         clearHugeOverlay();
 
+        // 邪修闸门：摘掉 img.showing 的原图 src，关闸，阻止 HFS 原生加载
+        const showingNow = getMainImage();
+        if (showingNow) {
+            const cur = showingNow.getAttribute('src') || '';
+            if (cur && !cur.startsWith('data:')) hugeState.parkedSrc = cur;
+            try {
+                showingNow.removeAttribute('srcset');
+                showingNow.setAttribute('loading', 'lazy');
+                showingNow.style.setProperty('opacity', '0', 'important');
+                showingNow.src = BLANK_PIXEL;
+            } catch (e) { }
+        }
+        closeGate(index);
+
         const container = getShowingContainerEl();
         if (!container) {
-            doLoadMainImage(index, true);
+            hugeState.targetIndex = index;
+            hugeState.deadline = 0;
+            hugeState.countdownMs = 0;
+            hugeState.timer = setTimeout(() => {
+                hugeState.timer = null;
+                if (state.currentIndex !== index) return;
+                startHugeCountdown(index);
+            }, 120);
             return;
         }
 
@@ -315,7 +320,7 @@
             }
         } catch (e) { }
 
-        const countdownMs = getHugeCountdownMs(img);
+        const countdownMs = getHugeCountdownMs();
 
         const overlay = document.createElement('div');
         overlay.className = 'ib-huge-overlay';
@@ -361,95 +366,98 @@
             state.settleTimer = null;
         }
         state.pendingLoadIndex = -1;
+        openGate(index);
         doLoadMainImage(index, true);
     }
 
     function isHugeImage(img) {
         if (!img) return false;
         const size = (img.size !== null && img.size !== undefined) ? img.size : 0;
-        return size >= HUGE_IMAGE_THRESHOLD;
+        return size >= getHugeThresholdBytes();
+    }
+
+    function normalizeUrl(u) {
+        if (!u) return '';
+        try {
+            const url = new URL(u, location.origin);
+            return url.pathname + url.search;
+        } catch (e) {
+            return u;
+        }
+    }
+
+    function getMainImage() {
+        return document.querySelector('.file-show img.showing');
+    }
+
+    function getShowingContainerEl() {
+        const img = getMainImage();
+        if (!img) return null;
+        return img.closest('.showing-container') || img.parentElement || null;
     }
 
     function isImageAlreadyLoaded(img) {
         if (!img) return false;
-
         const showing = getMainImage();
-        if (showing && showing.complete && showing.naturalWidth > 0 &&
-            mainImage.objUrl && showing.src === mainImage.objUrl &&
-            normalizeUrl(img.url) === normalizeUrl(mainImage.url || '')) {
-            return true;
-        }
-
-        if (state.preloadCache.has(img.url)) {
-            return true;
-        }
-
-        return false;
+        if (!showing || !showing.complete || !showing.naturalWidth) return false;
+        const src = showing.getAttribute('src') || '';
+        if (!src || src.startsWith('blob:') || src.startsWith('data:')) return false;
+        return normalizeUrl(src) === normalizeUrl(img.url);
     }
 
-    function loadMainImageXhr(img) {
-        abortMainImageXhr();
+    function loadMainImageNative(img) {
         if (!img || !img.url) return;
-
-        const showing = document.querySelector('.file-show img.showing');
+        const showing = getMainImage();
         if (!showing) return;
 
-        const targetUrl = img.url;
-        mainImage.url = targetUrl;
+        // 闸门：未放行则不允许设原图 src
+        if (hugeState.gateClosed) return;
+        if (hugeState.gateIndex >= 0 &&
+            state.images[hugeState.gateIndex] !== img) return;
 
-        const currentSrc = showing.getAttribute('src') || '';
-        if (mainImage.objUrl && currentSrc === mainImage.objUrl) {
-            armProgressivePreview(img);
+        // 双保险：倒计时未结束不加载
+        if (hugeState.el &&
+            hugeState.targetIndex >= 0 &&
+            state.images[hugeState.targetIndex] === img &&
+            Date.now() < hugeState.deadline) {
             return;
         }
 
+        try { showing.removeAttribute('srcset'); } catch (e) { }
+        try { showing.removeAttribute('loading'); } catch (e) { }
+
+        // 保持 opacity:0，等真正加载出内容再显示，避免空白闪烁
+        try {
+            showing.style.setProperty('opacity', '0', 'important');
+        } catch (e) {
+            showing.style.opacity = '0';
+        }
+        showing.classList.remove('ib-fading');
+
+        const onReady = () => {
+            try { showing.removeEventListener('load', onReady); } catch (e) { }
+            try { showing.removeEventListener('error', onReady); } catch (e) { }
+            if (!showing.naturalWidth) return;
+            const s = showing.getAttribute('src') || '';
+            if (s.startsWith('data:')) return;
+            try {
+                showing.style.removeProperty('opacity');
+            } catch (e) {
+                showing.style.opacity = '';
+            }
+            finishProgress();
+        };
+
+        showing.addEventListener('load', onReady);
+        showing.addEventListener('error', onReady);
+
+        showing.src = img.url;
+
         startProgressFor(state.currentIndex);
 
-        const xhr = new XMLHttpRequest();
-        mainImage.xhr = xhr;
-        xhr.open('GET', targetUrl, true);
-        xhr.responseType = 'blob';
-
-        xhr.onprogress = (e) => {
-            if (mainImage.xhr !== xhr) return;
-            if (!PROGRESS.enabled) return;
-            if (!e.lengthComputable || e.total <= 0) return;
-            const pct = Math.round((e.loaded / e.total) * 100);
-            applyProgressVisual(pct);
-        };
-
-        xhr.onload = () => {
-            if (mainImage.xhr !== xhr) return;
-            mainImage.xhr = null;
-            if (mainImage.url !== targetUrl) return;
-
-            applyProgressVisual(100);
-            scheduleProgressHide(250);
-
-            try {
-                revokeMainObjUrl();
-                mainImage.objUrl = URL.createObjectURL(xhr.response);
-                const showingNow = document.querySelector('.file-show img.showing');
-                if (showingNow) {
-                    showingNow.removeAttribute('srcset');
-                    showingNow.src = mainImage.objUrl;
-                }
-            } catch (e) { }
-        };
-
-        xhr.onerror = () => {
-            if (mainImage.xhr === xhr) mainImage.xhr = null;
-            scheduleProgressHide(200);
-        };
-
-        xhr.onabort = () => {
-            if (mainImage.xhr === xhr) mainImage.xhr = null;
-        };
-
-        try {
-            xhr.send();
-        } catch (e) {
-            mainImage.xhr = null;
+        if (showing.complete && showing.naturalWidth > 0) {
+            const s = showing.getAttribute('src') || '';
+            if (!s.startsWith('data:')) requestAnimationFrame(onReady);
         }
     }
 
@@ -475,10 +483,6 @@
         pinchStartCenterX: 0,
         pinchStartCenterY: 0,
     };
-
-    function getMainImage() {
-        return document.querySelector('.file-show img.showing');
-    }
 
     function getShowingContainer() {
         const img = getMainImage();
@@ -840,12 +844,6 @@
     let previewCurrentUrl = '';
     let previewSafetyTimer = null;
 
-    function getShowingContainerEl() {
-        const img = getMainImage();
-        if (!img) return null;
-        return img.closest('.showing-container') || img.parentElement || null;
-    }
-
     function stopPreviewTimers() {
         if (previewSafetyTimer) {
             clearTimeout(previewSafetyTimer);
@@ -871,16 +869,6 @@
             previewImgEl = null;
         }
         previewCurrentUrl = '';
-    }
-
-    function normalizeUrl(u) {
-        if (!u) return '';
-        try {
-            const url = new URL(u, location.origin);
-            return url.pathname + url.search;
-        } catch (e) {
-            return u;
-        }
     }
 
     function getReadyThumbSrc(img, index) {
@@ -923,8 +911,6 @@
         pImg.draggable = false;
         pImg.alt = '';
         pImg.src = thumbSrc;
-        pImg.style.opacity = '1';
-        pImg.style.zIndex = '2';
 
         if (showing.parentNode === container) {
             container.insertBefore(pImg, showing.nextSibling);
@@ -936,10 +922,8 @@
         previewBoundShowing = showing;
 
         try {
-            showing.style.setProperty('transition', 'none', 'important');
             showing.style.setProperty('opacity', '0', 'important');
         } catch (e) {
-            showing.style.transition = 'none';
             showing.style.opacity = '0';
         }
         showing.classList.remove('ib-fading');
@@ -948,35 +932,39 @@
         const boundPreviewImg = pImg;
         let finalized = false;
 
+        const isShowingReady = () => {
+            if (!boundShowing) return false;
+            if (!boundShowing.complete || !boundShowing.naturalWidth) return false;
+            const s = boundShowing.getAttribute('src') || '';
+            if (s.startsWith('data:')) return false;
+            return true;
+        };
+
         const finalize = () => {
             if (finalized) return;
             finalized = true;
             try { boundShowing.removeEventListener('load', onLoad); } catch (e) { }
             try { boundShowing.removeEventListener('error', onLoad); } catch (e) { }
             stopPreviewTimers();
-            finishProgress();
 
-            try {
-                boundShowing.style.setProperty('transition', 'none', 'important');
-                boundShowing.style.removeProperty('opacity');
-            } catch (e) {
-                boundShowing.style.transition = 'none';
-                boundShowing.style.opacity = '';
+            const ready = isShowingReady();
+            if (ready) {
+                try {
+                    boundShowing.style.removeProperty('opacity');
+                } catch (e) {
+                    boundShowing.style.opacity = '';
+                }
+                boundShowing.classList.remove('ib-fading');
+                if (boundPreviewImg && boundPreviewImg.parentNode) {
+                    boundPreviewImg.remove();
+                }
+                if (previewImgEl === boundPreviewImg) previewImgEl = null;
+                finishProgress();
+            } else {
+                try {
+                    boundShowing.style.setProperty('opacity', '0', 'important');
+                } catch (e) { boundShowing.style.opacity = '0'; }
             }
-            boundShowing.classList.remove('ib-fading');
-
-            if (boundPreviewImg && boundPreviewImg.parentNode) {
-                boundPreviewImg.style.transition = `opacity ${PREVIEW.fadeOutMs}ms ease-out`;
-                boundPreviewImg.style.opacity = '0';
-                setTimeout(() => {
-                    if (boundPreviewImg.parentNode) boundPreviewImg.remove();
-                }, PREVIEW.fadeOutMs + 50);
-            }
-            if (previewImgEl === boundPreviewImg) previewImgEl = null;
-
-            requestAnimationFrame(() => {
-                try { boundShowing.style.removeProperty('transition'); } catch (e) { }
-            });
 
             if (previewBoundShowing === boundShowing) {
                 previewBoundShowing = null;
@@ -985,7 +973,7 @@
                 previewCurrentUrl = '';
             }
 
-            updateFileInfoResFromShowing(boundShowing);
+            if (ready) updateFileInfoResFromShowing(boundShowing);
         };
 
         const onLoad = () => finalize();
@@ -995,7 +983,7 @@
         boundShowing.addEventListener('load', onLoad);
         boundShowing.addEventListener('error', onLoad);
 
-        if (boundShowing.complete && boundShowing.naturalWidth > 0) {
+        if (isShowingReady()) {
             requestAnimationFrame(finalize);
             return;
         }
@@ -1039,8 +1027,6 @@
     function interruptMainImage() {
         if (!BUILTIN.enableInterruptOnNavigate) return;
 
-        abortMainImageXhr();
-        revokeMainObjUrl();
         clearHugeOverlay();
 
         if (previewBoundShowing) {
@@ -1053,14 +1039,19 @@
             showing.onerror = null;
             try { showing.removeAttribute('srcset'); } catch (e) { }
             try {
-                showing.style.setProperty('transition', 'none', 'important');
                 showing.style.setProperty('opacity', '0', 'important');
             } catch (e) {
-                showing.style.transition = 'none';
                 showing.style.opacity = '0';
             }
             clearHfsLoadingState(showing);
+
+            // 邪修闸门：每次导航先摘掉 img.showing 的原图 src，阻止 HFS 原生加载
+            try {
+                showing.setAttribute('loading', 'lazy');
+                showing.src = BLANK_PIXEL;
+            } catch (e) { }
         }
+        closeGate(-1);
 
         const showingContainer = document.querySelector('.file-show .showing-container');
         if (showingContainer) {
@@ -1103,6 +1094,12 @@
             state.settleTimer = null;
             if (state.pendingLoadIndex < 0) return;
             if (state.pendingLoadIndex !== state.currentIndex) return;
+            const target = state.images[state.pendingLoadIndex];
+            if (target && isHugeImage(target) &&
+                !(hugeState.el && hugeState.targetIndex === state.pendingLoadIndex)) {
+                startHugeCountdown(state.pendingLoadIndex);
+                return;
+            }
             doLoadMainImage(state.pendingLoadIndex);
         }, delay);
     }
@@ -1114,6 +1111,7 @@
             state.settleTimer = null;
         }
         if (state.pendingLoadIndex !== index) return;
+        openGate(index);
         doLoadMainImage(index);
     }
 
@@ -1123,21 +1121,23 @@
         const showing = document.querySelector('.file-show img.showing');
         if (!showing) return;
 
-        clearHugeOverlay();
-
         if (isImageAlreadyLoaded(img)) {
+            clearHugeOverlay();
             armProgressivePreview(img);
             return;
         }
 
         if (isHugeImage(img) && !force) {
+            if (!(hugeState.el && hugeState.targetIndex === index)) {
+                startHugeCountdown(index);
+            }
             armProgressivePreview(img);
-            startHugeCountdown(index);
             return;
         }
 
+        clearHugeOverlay();
         armProgressivePreview(img);
-        loadMainImageXhr(img);
+        loadMainImageNative(img);
 
         requestAnimationFrame(() => {
             zoomDragBound = false;
@@ -1256,7 +1256,7 @@
     function findCurrentIndex() {
         const showing = document.querySelector('.file-show img.showing');
         let cur = showing ? showing.getAttribute('src') : '';
-        if (!cur) cur = window.location.pathname;
+        if (!cur || cur.startsWith('data:')) cur = window.location.pathname;
         if (cur.startsWith('blob:')) {
             if (state.lastKnownName) {
                 const idx = state.images.findIndex(i => i.name === state.lastKnownName);
@@ -1273,33 +1273,6 @@
         let idx = state.images.findIndex(i => i.name === tName);
         if (idx < 0) idx = state.images.findIndex(i => norm(i.url) === target);
         return idx;
-    }
-
-    function preloadAround(index) {
-        if (index < 0) return;
-        const N = Math.max(0, Math.floor(+C.preloadCount) || 0);
-        if (N === 0) return;
-        for (let off = -N; off <= N; off++) {
-            if (off === 0) continue;
-            const img = state.images[index + off];
-            if (!img) continue;
-            if (isHugeImage(img)) continue;
-            if (state.preloadCache.has(img.url) || state.preloadPending.has(img.url)) continue;
-            state.preloadPending.add(img.url);
-            const im = new Image();
-            im.dataset.ibPreload = '1';
-            im.decoding = 'async';
-            im.onload = () => {
-                state.preloadPending.delete(img.url);
-                state.preloadCache.set(img.url, im);
-                if (state.preloadCache.size > N * 2 + 5) {
-                    const first = state.preloadCache.keys().next().value;
-                    state.preloadCache.delete(first);
-                }
-            };
-            im.onerror = () => state.preloadPending.delete(img.url);
-            im.src = img.url;
-        }
     }
 
     function getNavButtons() {
@@ -1423,6 +1396,7 @@
                 state.pendingLoadIndex = -1;
                 startHugeCountdown(index);
             } else {
+                openGate(index);
                 scheduleLoad(index);
             }
         }
@@ -1496,8 +1470,7 @@
 
             const showing = getMainImage();
             if (showing && showing.complete && showing.naturalWidth > 0 &&
-                mainImage.objUrl && showing.src === mainImage.objUrl &&
-                normalizeUrl(img.url) === normalizeUrl(mainImage.url || '')) {
+                normalizeUrl(showing.getAttribute('src') || '') === normalizeUrl(img.url)) {
                 const w = showing.naturalWidth;
                 const h = showing.naturalHeight;
                 const res = {
@@ -1956,7 +1929,6 @@
                 state.counterEl.textContent = `${index + 1} / ${state.images.length}`;
             }
             updateFileInfo(index);
-            preloadAround(index);
         } finally {
             updatingActive = false;
             if (pendingIndex !== null && pendingIndex !== index) {
@@ -2082,7 +2054,15 @@
             if (!isDragging) return;
             isDragging = false;
             updateActive(state.currentIndex, true);
-            scheduleLoad(state.currentIndex);
+            const img = state.images[state.currentIndex];
+            if (img && isHugeImage(img)) {
+                if (!(hugeState.el && hugeState.targetIndex === state.currentIndex)) {
+                    startHugeCountdown(state.currentIndex);
+                }
+            } else {
+                openGate(state.currentIndex);
+                scheduleLoad(state.currentIndex);
+            }
         }
         strip.addEventListener('touchstart', onTouchStart, { passive: true });
         strip.addEventListener('touchmove', onTouchMove, { passive: false });
@@ -2130,7 +2110,8 @@
         if (!showing) return;
         const src = showing.getAttribute('src') || '';
         const isObjectUrl = src.startsWith('blob:');
-        if (!isObjectUrl && !isImageName(src.split('?')[0].split('/').pop())) {
+        const isBlankPixel = src.startsWith('data:');
+        if (!isObjectUrl && !isBlankPixel && !isImageName(src.split('?')[0].split('/').pop())) {
             if (!state.lastKnownName) return;
         }
         const stripInThisViewer = viewer.querySelector('.ib-strip-container');
@@ -2211,6 +2192,7 @@
                     armProgressivePreview(firstImg);
                     startHugeCountdown(idx);
                 } else {
+                    openGate(idx);
                     doLoadMainImage(idx);
                 }
             }
@@ -2243,10 +2225,8 @@
             showing.style.transform = '';
             showing.style.transformOrigin = '';
             try {
-                showing.style.removeProperty('transition');
                 showing.style.removeProperty('opacity');
             } catch (e) {
-                showing.style.transition = '';
                 showing.style.opacity = '';
             }
             showing.style.cursor = '';
@@ -2274,9 +2254,9 @@
     function unmount() {
         clearProgressivePreview();
         abortProgress();
-        abortMainImageXhr();
-        revokeMainObjUrl();
         clearHugeOverlay();
+        closeGate(-1);
+        hugeState.parkedSrc = '';
         resetZoom();
         unbindZoomDrag();
         window.removeEventListener('pointermove', onZoomPointerMove);
@@ -2314,8 +2294,6 @@
         state.listFetchedFor = '';
         state.lastKnownName = '';
         state.mountedAt = 0;
-        state.preloadCache.clear();
-        state.preloadPending.clear();
         state.metaCache.clear();
         mounted = false;
         if (state.resizeReloadTimer) {
@@ -2433,14 +2411,16 @@
                 const showing = viewer ? viewer.querySelector('img.showing') : null;
                 const src = showing ? (showing.getAttribute('src') || '') : '';
                 const isObjectUrl = src.startsWith('blob:');
-                const isImg = !!showing && (isObjectUrl || isImageName(src.split('?')[0].split('/').pop()));
+                const isBlankPixel = src.startsWith('data:');
+                const isImg = !!showing && (isObjectUrl || isBlankPixel ||
+                    isImageName(src.split('?')[0].split('/').pop()));
                 if (isImg) {
                     if (pendingUnmount) {
                         clearTimeout(pendingUnmount);
                         pendingUnmount = null;
                     }
                     if (mounted) healThumbnails();
-                    if (!isObjectUrl) {
+                    if (!isObjectUrl && !isBlankPixel) {
                         const newName = decodeURIComponent(src.split('/').pop().split('?')[0]);
                         if (newName !== state.lastKnownName) {
                             state.lastKnownName = newName;
@@ -2508,8 +2488,8 @@
         preview: PREVIEW,
         progress: PROGRESS,
         settleTiers: SETTLE_TIERS,
-        hugeThreshold: HUGE_IMAGE_THRESHOLD,
-        hugeCountdownTiers: HUGE_COUNTDOWN_TIERS,
+        get hugeThreshold() { return getHugeThresholdBytes(); },
+        getHugeThresholdBytes,
         getHugeCountdownMs,
         navigateTo, navigateNext, navigatePrev,
         detectNextButton, detectJumpMode,
@@ -2526,7 +2506,8 @@
         scheduleLoad, doLoadMainImage, getSettleDelayFor, forceLoadNow,
         startHugeCountdown, forceHugeLoad, clearHugeOverlay,
         isHugeImage, isImageAlreadyLoaded,
-        loadMainImageXhr, abortMainImageXhr,
+        loadMainImageNative,
+        closeGate, openGate,
         resetDetect: () => { state.nextButtonSide = 'right'; state.jumpMode = null; },
         refresh: () => { state.listFetchedFor = ''; schedule(); },
     };
