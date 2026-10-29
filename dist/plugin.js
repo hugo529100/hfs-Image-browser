@@ -64,12 +64,12 @@ exports.config = {
 
     canvasThresholdMb: {
         showIf: x => x.config_tab === 'large',
-        type: 'number', defaultValue: 50, min: 1, max: 4096,
+        type: 'number', defaultValue: 60, min: 1, max: 4096,
         label: "Super Huge Image Threshold (MB)",
         helperText: "Images at or above this size (MB) still follow the normal " +
                     "countdown/gate flow, but after the gate opens they are " +
                     "rendered with Canvas local drawing for smooth zoom/pan. " +
-                    "Independent from 'Large Image Threshold'. Default 50 MB.",
+                    "Independent from 'Large Image Threshold'. Default 60 MB.",
         frontend: true
     },
 

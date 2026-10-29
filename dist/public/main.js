@@ -942,11 +942,22 @@
             zoomState.pinchStartScale = zoomState.scale;
             zoomState.pinchStartTranslateX = zoomState.translateX;
             zoomState.pinchStartTranslateY = zoomState.translateY;
-            const rect = img.getBoundingClientRect();
+
             const cx = (t1.clientX + t2.clientX) / 2;
             const cy = (t1.clientY + t2.clientY) / 2;
-            zoomState.pinchStartCenterX = cx - (rect.left + rect.width / 2);
-            zoomState.pinchStartCenterY = cy - (rect.top + rect.height / 2);
+
+            // Canvas 模式：以容器中心為基準（與 renderCanvas 座標系一致）
+            // 原生模式：以圖片 rect 中心為基準
+            let baseRect;
+            if (canvasState.active) {
+                const container = getShowingContainerEl();
+                baseRect = container ? container.getBoundingClientRect() : img.getBoundingClientRect();
+            } else {
+                baseRect = img.getBoundingClientRect();
+            }
+            zoomState.pinchStartCenterX = cx - (baseRect.left + baseRect.width / 2);
+            zoomState.pinchStartCenterY = cy - (baseRect.top + baseRect.height / 2);
+
             setContainerTouchAction('none');
             e.preventDefault();
         } else if (e.touches.length === 1 && zoomState.scale > 1) {
