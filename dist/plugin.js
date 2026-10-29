@@ -1,4 +1,4 @@
-exports.version = 4.5;
+exports.version = 4.7;
 exports.apiRequired = 10.0;
 exports.repo = "Hug3O/Image-browser";
 exports.description = "High-efficiency Picasa-style image browser with thumbnail strip, progressive preview, and smart deferred loading.";
@@ -62,6 +62,17 @@ exports.config = {
         frontend: true
     },
 
+    canvasThresholdMb: {
+        showIf: x => x.config_tab === 'large',
+        type: 'number', defaultValue: 50, min: 1, max: 4096,
+        label: "Super Huge Image Threshold (MB)",
+        helperText: "Images at or above this size (MB) still follow the normal " +
+                    "countdown/gate flow, but after the gate opens they are " +
+                    "rendered with Canvas local drawing for smooth zoom/pan. " +
+                    "Independent from 'Large Image Threshold'. Default 50 MB.",
+        frontend: true
+    },
+
     // ============================================
     // === 2. Thumbnails ===
     // ============================================
@@ -120,6 +131,7 @@ exports.configDialog = {
 };
 
 exports.changelog = [
+    { version: 4.6, message: "Added 'Super Huge Image Threshold (MB)': images >= this size still follow countdown/gate, then render via Canvas local drawing for smooth zoom/pan. Configurable in backend." },
     { version: 4.4, message: "Removed preloadCount (conflicts with gate/countdown throttling)." },
     { version: 4.3, message: "Rearranged config dialog: 'Large Images' (threshold + countdown) first, 'Thumbnails' second." },
     { version: 4.2, message: "Added tabbed configuration dialog (General / Huge Images)." },

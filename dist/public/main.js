@@ -74,6 +74,7 @@
         mobileThumbnailSizeUnit: 'vh',
         hugeImageThresholdMb: 8,
         hugeCountdownSeconds: 3,
+        canvasThresholdMb: 50,
     };
 
     function loadConfig() {
@@ -94,6 +95,11 @@
     function getHugeCountdownMs() {
         const sec = Math.max(1, Math.floor(+C.hugeCountdownSeconds) || 3);
         return sec * 1000;
+    }
+
+    function getCanvasThresholdBytes() {
+        const mb = Math.max(1, Math.floor(+C.canvasThresholdMb) || 50);
+        return mb * 1024 * 1024;
     }
 
     function resolveThumbHeight(value, unit) {
@@ -376,6 +382,16 @@
         return size >= getHugeThresholdBytes();
     }
 
+    function isSuperHugeImage(img) {
+        if (!img) return false;
+        const size = (img.size !== null && img.size !== undefined) ? img.size : 0;
+        return size >= getCanvasThresholdBytes();
+    }
+
+    function shouldUseCanvas(img) {
+        return isSuperHugeImage(img);
+    }
+
     function normalizeUrl(u) {
         if (!u) return '';
         try {
@@ -463,8 +479,9 @@
 
     const ZOOM_CFG = {
         MIN: 1,
-        MAX: 8,
+        MAX: 60,
         STEP: 0.5,
+        PAN_STEP: 40,
     };
 
     const zoomState = {
@@ -484,6 +501,264 @@
         pinchStartCenterY: 0,
     };
 
+    // ============================================================
+    // Canvas 局部渲染（仅用于超级大图，体积 >= canvasThresholdMb）
+    // 注意：超级大图仍然照常走倒计时/闸门，放行后才用 Canvas 渲染
+    // ============================================================
+    const canvasState = {
+        el: null,
+        ctx: null,
+        naturalW: 0,
+        naturalH: 0,
+        dpr: 1,
+        active: false,
+        srcUrl: '',
+        pendingSrc: '',
+        loadToken: 0,
+        image: null,
+        renderPending: false,
+    };
+
+    // 源图降采样上限：长边超过此值时用 createImageBitmap 预缩小，
+    // 避免每帧从巨大的原图纹理采样导致卡顿。
+    const MAX_SOURCE_EDGE = 8192;
+
+    function getCanvasLayer() {
+        return canvasState.el;
+    }
+
+    function ensureCanvasLayer() {
+        const container = getShowingContainerEl();
+        if (!container) return null;
+        if (canvasState.el && canvasState.el.parentNode === container) {
+            return canvasState.el;
+        }
+        removeCanvasLayer();
+        const cv = document.createElement('canvas');
+        cv.className = 'ib-canvas-layer';
+        cv.style.position = 'absolute';
+        cv.style.inset = '0';
+        cv.style.width = '100%';
+        cv.style.height = '100%';
+        cv.style.pointerEvents = 'none';
+        cv.style.zIndex = '2';
+        cv.style.display = 'none';
+        container.appendChild(cv);
+        canvasState.el = cv;
+        canvasState.ctx = cv.getContext('2d');
+        return cv;
+    }
+
+    function removeCanvasLayer() {
+        if (canvasState.el && canvasState.el.parentNode) {
+            canvasState.el.remove();
+        }
+        canvasState.el = null;
+        canvasState.ctx = null;
+        canvasState.active = false;
+        canvasState.image = null;
+        canvasState.srcUrl = '';
+        canvasState.pendingSrc = '';
+        canvasState.loadToken++;
+        canvasState.renderPending = false;
+    }
+
+    function sizeCanvasToContainer() {
+        const cv = canvasState.el;
+        const container = getShowingContainerEl();
+        if (!cv || !container) return;
+        // DPR 上限从 2 降到 1.5：高倍放大时源图本身已插值，画布无需过采样
+        const dpr = Math.max(1, Math.min(1.5, window.devicePixelRatio || 1));
+        const cw = Math.max(1, container.clientWidth);
+        const ch = Math.max(1, container.clientHeight);
+        const needW = Math.round(cw * dpr);
+        const needH = Math.round(ch * dpr);
+        if (cv.width !== needW || cv.height !== needH) {
+            cv.width = needW;
+            cv.height = needH;
+        }
+        canvasState.dpr = dpr;
+    }
+
+    function getBaseFitRect() {
+        const container = getShowingContainerEl();
+        if (!container) return null;
+        const cw = container.clientWidth;
+        const ch = container.clientHeight;
+        const nw = canvasState.naturalW;
+        const nh = canvasState.naturalH;
+        if (!cw || !ch || !nw || !nh) return null;
+        const fit = Math.min(cw / nw, ch / nh);
+        const dispW = nw * fit;
+        const dispH = nh * fit;
+        return { cw, ch, nw, nh, fit, dispW, dispH };
+    }
+
+    function renderCanvas() {
+        const cv = canvasState.el;
+        const ctx = canvasState.ctx;
+        const imgEl = canvasState.image;
+        if (!cv || !ctx || !imgEl) return;
+        if (!canvasState.active) return;
+
+        sizeCanvasToContainer();
+        const base = getBaseFitRect();
+        if (!base) return;
+
+        const dpr = canvasState.dpr;
+        const cw = base.cw;
+        const ch = base.ch;
+
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, cv.width, cv.height);
+
+        const scale = zoomState.scale;
+        const tx = zoomState.translateX;
+        const ty = zoomState.translateY;
+
+        const dispW = base.dispW * scale;
+        const dispH = base.dispH * scale;
+
+        const drawLeft = -dispW / 2 + tx;
+        const drawTop = -dispH / 2 + ty;
+
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        const destX = drawLeft + cw / 2;
+        const destY = drawTop + ch / 2;
+
+        const visX0 = Math.max(0, destX);
+        const visY0 = Math.max(0, destY);
+        const visX1 = Math.min(cw, destX + dispW);
+        const visY1 = Math.min(ch, destY + dispH);
+        if (visX1 <= visX0 || visY1 <= visY0) return;
+
+        const sx = (visX0 - destX) / dispW * base.nw;
+        const sy = (visY0 - destY) / dispH * base.nh;
+        const sw = (visX1 - visX0) / dispW * base.nw;
+        const sh = (visY1 - visY0) / dispH * base.nh;
+
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+
+        try {
+            ctx.drawImage(
+                imgEl,
+                sx, sy, sw, sh,
+                visX0, visY0, visX1 - visX0, visY1 - visY0
+            );
+        } catch (e) { }
+    }
+
+    function scheduleCanvasRender() {
+        if (!canvasState.active) return;
+        if (canvasState.renderPending) return;
+        canvasState.renderPending = true;
+        requestAnimationFrame(() => {
+            canvasState.renderPending = false;
+            renderCanvas();
+        });
+    }
+
+    function loadCanvasImage(img) {
+        if (!img || !img.url) return;
+        ensureCanvasLayer();
+        if (!canvasState.el) return;
+
+        if (canvasState.srcUrl === img.url && canvasState.image) {
+            canvasState.active = true;
+            canvasState.el.style.display = 'block';
+            hideNativeShowing(true);
+            scheduleCanvasRender();
+            return;
+        }
+
+        const token = ++canvasState.loadToken;
+        canvasState.pendingSrc = img.url;
+
+        const loader = new Image();
+        loader.decoding = 'async';
+        loader.onload = async () => {
+            if (token !== canvasState.loadToken) return;
+            const cur = state.images[state.currentIndex];
+            if (!cur || cur.url !== img.url) return;
+
+            const nw = loader.naturalWidth || 0;
+            const nh = loader.naturalHeight || 0;
+            let src = loader;
+            let sw = nw;
+            let sh = nh;
+
+            // 降采样：长边超过 MAX_SOURCE_EDGE 时用 createImageBitmap 预缩小，
+            // 之后所有绘制都从降采样图采样，避免每帧处理超大原图纹理。
+            const maxEdge = Math.max(nw, nh);
+            if (maxEdge > MAX_SOURCE_EDGE && typeof createImageBitmap === 'function') {
+                const ratio = MAX_SOURCE_EDGE / maxEdge;
+                const rw = Math.max(1, Math.round(nw * ratio));
+                const rh = Math.max(1, Math.round(nh * ratio));
+                try {
+                    const bmp = await createImageBitmap(loader, {
+                        resizeWidth: rw,
+                        resizeHeight: rh,
+                        resizeQuality: 'high',
+                    });
+                    src = bmp;
+                    sw = rw;
+                    sh = rh;
+                } catch (e) {
+                    src = loader;
+                    sw = nw;
+                    sh = nh;
+                }
+            }
+
+            if (token !== canvasState.loadToken) return;
+
+            canvasState.image = src;
+            canvasState.naturalW = sw;
+            canvasState.naturalH = sh;
+            canvasState.srcUrl = img.url;
+            canvasState.pendingSrc = '';
+
+            canvasState.active = true;
+            if (canvasState.el) canvasState.el.style.display = 'block';
+            hideNativeShowing(true);
+            scheduleCanvasRender();
+            finishProgress();
+        };
+        loader.onerror = () => {
+            if (token !== canvasState.loadToken) return;
+            canvasState.pendingSrc = '';
+            deactivateCanvas(true);
+        };
+        loader.src = img.url;
+    }
+
+    function hideNativeShowing(hide) {
+        const showing = getMainImage();
+        if (!showing) return;
+        if (hide) {
+            showing.style.visibility = 'hidden';
+            showing.style.transform = 'none';
+            showing.style.transition = 'none';
+        } else {
+            showing.style.visibility = '';
+        }
+    }
+
+    function deactivateCanvas(restoreNative) {
+        canvasState.active = false;
+        if (canvasState.el) canvasState.el.style.display = 'none';
+        canvasState.image = null;
+        canvasState.srcUrl = '';
+        canvasState.pendingSrc = '';
+        canvasState.loadToken++;
+        hideNativeShowing(false);
+        if (restoreNative) {
+            applyZoomTransform(false);
+        }
+    }
+
     function getShowingContainer() {
         const img = getMainImage();
         if (!img) return null;
@@ -495,16 +770,29 @@
         if (container) container.style.touchAction = value;
     }
 
+    function updateZoomLabel() {
+        const btn = state.zoomControlsEl
+            ? state.zoomControlsEl.querySelector('.ib-zoom-reset')
+            : null;
+        if (!btn) return;
+        const txt = zoomState.scale.toFixed(1) + 'x';
+        if (btn.textContent !== txt) btn.textContent = txt;
+    }
+
     function applyZoomTransform(animated = false) {
         const img = getMainImage();
         if (!img) return;
 
-        if (animated) {
-            img.style.transition = 'transform 0.2s ease-out';
-        } else {
-            img.style.transition = 'none';
+        // Canvas 模式下：不改 img transform，改为重绘 Canvas
+        if (canvasState.active) {
+            hideNativeShowing(true);
+            scheduleCanvasRender();
+            updateZoomLabel();
+            return;
         }
 
+        // 过渡完全由 animated 决定：true 平滑缩放，false 硬性即时（拖拽/平移跟手）
+        img.style.transition = animated ? 'transform 0.2s ease-out' : 'none';
         img.style.transformOrigin = 'center center';
         img.style.transform =
             `translate(${zoomState.translateX}px, ${zoomState.translateY}px) scale(${zoomState.scale})`;
@@ -515,12 +803,7 @@
         img.style.userSelect = 'none';
         img.style.touchAction = zoomState.scale > 1 ? 'none' : '';
 
-        if (animated) {
-            requestAnimationFrame(() => {
-                const cur = getMainImage();
-                if (cur) cur.style.transition = '';
-            });
-        }
+        updateZoomLabel();
     }
 
     function clampZoomTranslation() {
@@ -530,8 +813,14 @@
         if (!container) return;
         const cw = container.clientWidth;
         const ch = container.clientHeight;
-        const nw = img.naturalWidth || 0;
-        const nh = img.naturalHeight || 0;
+        // Canvas 模式下 naturalWidth/Height 可能为 0（img 被隐藏但仍有原图 src 尺寸），
+        // 优先使用 canvasState 的尺寸
+        let nw = img.naturalWidth || 0;
+        let nh = img.naturalHeight || 0;
+        if (canvasState.active && canvasState.naturalW && canvasState.naturalH) {
+            nw = canvasState.naturalW;
+            nh = canvasState.naturalH;
+        }
         if (!nw || !nh) return;
         const fit = Math.min(cw / nw, ch / nh);
         const displayW = nw * fit * zoomState.scale;
@@ -542,6 +831,9 @@
         zoomState.translateY = Math.max(-maxY, Math.min(maxY, zoomState.translateY));
     }
 
+    // 以「当前可见屏幕中心」为轴心缩放：
+    // 视口中心对应图片点 p = -t/s，缩放后保持该点在视口中心 → t' = t * (s'/s)
+    // factor 为正数时表示目标缩放值；direction 为 ±1 时按 STEP 步进。
     function zoomImage(direction, factor) {
         const oldScale = zoomState.scale;
         let newScale;
@@ -552,7 +844,12 @@
         }
         newScale = Math.max(ZOOM_CFG.MIN, Math.min(ZOOM_CFG.MAX, newScale));
         if (newScale === oldScale) return;
+
+        const ratio = newScale / oldScale;
+        zoomState.translateX *= ratio;
+        zoomState.translateY *= ratio;
         zoomState.scale = newScale;
+
         if (newScale <= 1) {
             zoomState.translateX = 0;
             zoomState.translateY = 0;
@@ -573,6 +870,15 @@
         setContainerTouchAction('');
         const img = getMainImage();
         if (img) img.style.cursor = '';
+    }
+
+    function panZoomBy(dx, dy) {
+        if (zoomState.scale <= 1) return false;
+        zoomState.translateX += dx;
+        zoomState.translateY += dy;
+        clampZoomTranslation();
+        applyZoomTransform(false);
+        return true;
     }
 
     let zoomDragBound = false;
@@ -1121,12 +1427,15 @@
         const showing = document.querySelector('.file-show img.showing');
         if (!showing) return;
 
-        if (isImageAlreadyLoaded(img)) {
+        // 已加载且非 Canvas 图：直接复用
+        if (isImageAlreadyLoaded(img) && !shouldUseCanvas(img)) {
             clearHugeOverlay();
+            deactivateCanvas(false);
             armProgressivePreview(img);
             return;
         }
 
+        // 大图未放行：照常弹倒计时（超级大图也走这里）
         if (isHugeImage(img) && !force) {
             if (!(hugeState.el && hugeState.targetIndex === index)) {
                 startHugeCountdown(index);
@@ -1137,7 +1446,21 @@
 
         clearHugeOverlay();
         armProgressivePreview(img);
-        loadMainImageNative(img);
+
+        // 放行后：超级大图走 Canvas 局部绘制，其余走原生 img
+        if (shouldUseCanvas(img)) {
+            const showingNow = getMainImage();
+            if (showingNow) {
+                try {
+                    showingNow.removeAttribute('srcset');
+                    showingNow.src = BLANK_PIXEL;
+                } catch (e) { }
+            }
+            loadCanvasImage(img);
+        } else {
+            deactivateCanvas(false);
+            loadMainImageNative(img);
+        }
 
         requestAnimationFrame(() => {
             zoomDragBound = false;
@@ -1353,6 +1676,7 @@
         if (Date.now() - state.mountedAt < BUILTIN.coldStartMs) return;
 
         resetZoom();
+        deactivateCanvas(false);
 
         if (BUILTIN.enableInterruptOnNavigate) {
             interruptMainImage();
@@ -1380,7 +1704,7 @@
         const targetImg = state.images[index];
         if (targetImg) {
             armProgressivePreview(targetImg);
-            if (isImageAlreadyLoaded(targetImg)) {
+            if (isImageAlreadyLoaded(targetImg) && !shouldUseCanvas(targetImg)) {
                 if (state.settleTimer) {
                     clearTimeout(state.settleTimer);
                     state.settleTimer = null;
@@ -1604,8 +1928,8 @@
         });
         const zoomResetBtn = document.createElement('button');
         zoomResetBtn.type = 'button';
-        zoomResetBtn.className = 'ib-zoom-btn';
-        zoomResetBtn.textContent = 'o';
+        zoomResetBtn.className = 'ib-zoom-btn ib-zoom-reset';
+        zoomResetBtn.textContent = '1.0x';
         zoomResetBtn.title = 'Reset zoom (*)';
         zoomResetBtn.addEventListener('click', (e) => {
             e.preventDefault();
@@ -1985,6 +2309,7 @@
         if (tag === 'INPUT' || tag === 'TEXTAREA' ||
             (document.activeElement && document.activeElement.isContentEditable)) return;
         if (!document.querySelector('.file-show')) return;
+
         if (e.key === '+' || e.key === '=') {
             e.preventDefault(); e.stopPropagation(); zoomImage(1); return;
         }
@@ -1994,10 +2319,28 @@
         if (e.key === '*') {
             e.preventDefault(); e.stopPropagation(); resetZoom(); return;
         }
-        if (e.key === 'ArrowLeft') {
-            e.preventDefault(); e.stopPropagation(); navigatePrev();
-        } else if (e.key === 'ArrowRight') {
-            e.preventDefault(); e.stopPropagation(); navigateNext();
+
+        const isArrow = e.key === 'ArrowLeft' || e.key === 'ArrowRight' ||
+                        e.key === 'ArrowUp' || e.key === 'ArrowDown';
+
+        if (isArrow) {
+            // 放大模式：方向鍵平移圖片（平緩移動放大的視窗位置）
+            if (zoomState.scale > 1) {
+                e.preventDefault();
+                e.stopPropagation();
+                const step = ZOOM_CFG.PAN_STEP;
+                if (e.key === 'ArrowLeft') panZoomBy(step, 0);
+                else if (e.key === 'ArrowRight') panZoomBy(-step, 0);
+                else if (e.key === 'ArrowUp') panZoomBy(0, step);
+                else if (e.key === 'ArrowDown') panZoomBy(0, -step);
+                return;
+            }
+            // 非放大模式：左右鍵切換照片
+            if (e.key === 'ArrowLeft') {
+                e.preventDefault(); e.stopPropagation(); navigatePrev();
+            } else if (e.key === 'ArrowRight') {
+                e.preventDefault(); e.stopPropagation(); navigateNext();
+            }
         }
     }
 
@@ -2186,7 +2529,7 @@
             setTimeout(() => { detectJumpMode(); }, 500);
             if (state.images[idx]) {
                 const firstImg = state.images[idx];
-                if (isImageAlreadyLoaded(firstImg)) {
+                if (isImageAlreadyLoaded(firstImg) && !shouldUseCanvas(firstImg)) {
                     armProgressivePreview(firstImg);
                 } else if (isHugeImage(firstImg)) {
                     armProgressivePreview(firstImg);
@@ -2224,6 +2567,7 @@
         if (showing) {
             showing.style.transform = '';
             showing.style.transformOrigin = '';
+            showing.style.visibility = '';
             try {
                 showing.style.removeProperty('opacity');
             } catch (e) {
@@ -2235,11 +2579,13 @@
             showing.style.touchAction = '';
             showing.classList.remove('ib-fading');
         }
+        removeCanvasLayer();
         const container = document.querySelector('.file-show .showing-container');
         if (container) {
             container.style.touchAction = '';
             container.querySelectorAll('.ib-progressive-preview').forEach(el => el.remove());
             container.querySelectorAll('.ib-huge-overlay').forEach(el => el.remove());
+            container.querySelectorAll('.ib-canvas-layer').forEach(el => el.remove());
             if (state.showingContainerEl === container) {
                 try {
                     container.removeEventListener('click', onShowingContainerClick);
@@ -2249,6 +2595,7 @@
         }
         document.querySelectorAll('.file-show .ib-progressive-preview').forEach(el => el.remove());
         document.querySelectorAll('.file-show .ib-huge-overlay').forEach(el => el.remove());
+        document.querySelectorAll('.file-show .ib-canvas-layer').forEach(el => el.remove());
     }
 
     function unmount() {
@@ -2258,6 +2605,7 @@
         closeGate(-1);
         hugeState.parkedSrc = '';
         resetZoom();
+        removeCanvasLayer();
         unbindZoomDrag();
         window.removeEventListener('pointermove', onZoomPointerMove);
         window.removeEventListener('pointerup', onZoomPointerUp);
@@ -2311,6 +2659,7 @@
         if (!viewer) return;
         clearProgressivePreview();
         abortProgress();
+        removeCanvasLayer();
         const keepIndex = state.currentIndex;
         const keepCollapsed = state.collapsed;
         const keepImages = state.images;
@@ -2378,6 +2727,10 @@
 
     function onResize() {
         if (!mounted) return;
+        if (canvasState.active) {
+            sizeCanvasToContainer();
+            scheduleCanvasRender();
+        }
         const size = getEffectiveThumbSize();
         const sizeKey = `${size.h}x${size.gap}`;
         const aspectKey = getAspectKey();
@@ -2489,7 +2842,9 @@
         progress: PROGRESS,
         settleTiers: SETTLE_TIERS,
         get hugeThreshold() { return getHugeThresholdBytes(); },
+        get canvasThreshold() { return getCanvasThresholdBytes(); },
         getHugeThresholdBytes,
+        getCanvasThresholdBytes,
         getHugeCountdownMs,
         navigateTo, navigateNext, navigatePrev,
         detectNextButton, detectJumpMode,
@@ -2500,7 +2855,9 @@
         mount, unmount,
         softReloadBrowser,
         toggleCollapse,
-        zoomImage, resetZoom, zoomState,
+        zoomImage, resetZoom, panZoomBy, zoomState, updateZoomLabel,
+        canvasState, renderCanvas, deactivateCanvas,
+        isSuperHugeImage, shouldUseCanvas,
         clearProgressivePreview, armProgressivePreview,
         startProgressFor, finishProgress, abortProgress,
         scheduleLoad, doLoadMainImage, getSettleDelayFor, forceLoadNow,

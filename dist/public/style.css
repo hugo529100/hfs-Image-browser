@@ -286,6 +286,16 @@
     transform: scale(0.94);
 }
 
+/* 重置按钮：显示当前放大倍数，字体细小，允许拉宽 */
+.ib-zoom-btn.ib-zoom-reset {
+    font-size: 9px;
+    letter-spacing: 0;
+    font-variant-numeric: tabular-nums;
+    width: auto;
+    min-width: 30px;
+    padding: 0 5px;
+}
+
 /* ============================================================
    Collapse tab
    ============================================================ */
@@ -521,6 +531,13 @@ body.theme-dark .ib-thumb-progress-text {
         font-size: 12px;
     }
 
+    .ib-zoom-btn.ib-zoom-reset {
+        font-size: 8px;
+        width: auto;
+        min-width: 26px;
+        padding: 0 4px;
+    }
+
     .ib-thumb-progress-text {
         font-size: 10px;
     }
@@ -713,4 +730,16 @@ body.theme-dark .file-show .showing-container .ib-huge-hint {
     display: none !important;
     visibility: hidden !important;
     pointer-events: none !important;
+}
+
+/* Canvas 局部渲染层（超级大图专用，体积 >= canvasThresholdMb） */
+.file-show .showing-container .ib-canvas-layer {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 2;
+    display: none;
+    background: transparent;
 }
