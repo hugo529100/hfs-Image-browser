@@ -1,4 +1,4 @@
-exports.version = 4.7;
+exports.version = 4.8;
 exports.apiRequired = 10.0;
 exports.repo = "Hug3O/Image-browser";
 exports.description = "High-efficiency Picasa-style image browser with thumbnail strip, progressive preview, and smart deferred loading.";

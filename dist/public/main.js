@@ -165,6 +165,19 @@
         return isImageExt(String(name).split('.').pop());
     }
 
+    // main.js —— 新增一個輔助函式（放在 isImageName 附近）
+function getEffectiveImageUrl(img) {
+    if (!img || !img.url) return '';
+    const name = img.name || String(img.url).split('?')[0].split('/').pop();
+    if (!name) return img.url;
+    const ext = String(name).split('.').pop().toLowerCase();
+    if (ext === 'tif' || ext === 'tiff') {
+        const sep = img.url.includes('?') ? '&' : '?';
+        return img.url + sep + 'convert=tiff';
+    }
+    return img.url;
+}
+
     function formatBytes(n) {
         if (n === null || n === undefined || isNaN(n)) return '';
         if (n < 1024) return n + ' B';
@@ -412,14 +425,14 @@
         return img.closest('.showing-container') || img.parentElement || null;
     }
 
-    function isImageAlreadyLoaded(img) {
-        if (!img) return false;
-        const showing = getMainImage();
-        if (!showing || !showing.complete || !showing.naturalWidth) return false;
-        const src = showing.getAttribute('src') || '';
-        if (!src || src.startsWith('blob:') || src.startsWith('data:')) return false;
-        return normalizeUrl(src) === normalizeUrl(img.url);
-    }
+function isImageAlreadyLoaded(img) {
+    if (!img) return false;
+    const showing = getMainImage();
+    if (!showing || !showing.complete || !showing.naturalWidth) return false;
+    const src = showing.getAttribute('src') || '';
+    if (!src || src.startsWith('blob:') || src.startsWith('data:')) return false;
+    return normalizeUrl(src) === normalizeUrl(getEffectiveImageUrl(img));
+}
 
     function loadMainImageNative(img) {
         if (!img || !img.url) return;
@@ -467,7 +480,7 @@
         showing.addEventListener('load', onReady);
         showing.addEventListener('error', onReady);
 
-        showing.src = img.url;
+        showing.src = getEffectiveImageUrl(img);
 
         startProgressFor(state.currentIndex);
 
@@ -665,7 +678,8 @@
         ensureCanvasLayer();
         if (!canvasState.el) return;
 
-        if (canvasState.srcUrl === img.url && canvasState.image) {
+        const effUrl = getEffectiveImageUrl(img);
+if (canvasState.srcUrl === effUrl && canvasState.image) {
             canvasState.active = true;
             canvasState.el.style.display = 'block';
             hideNativeShowing(true);
@@ -681,7 +695,7 @@
         loader.onload = async () => {
             if (token !== canvasState.loadToken) return;
             const cur = state.images[state.currentIndex];
-            if (!cur || cur.url !== img.url) return;
+            if (!cur || getEffectiveImageUrl(cur) !== effUrl) return;
 
             const nw = loader.naturalWidth || 0;
             const nh = loader.naturalHeight || 0;
@@ -717,7 +731,7 @@
             canvasState.image = src;
             canvasState.naturalW = sw;
             canvasState.naturalH = sh;
-            canvasState.srcUrl = img.url;
+            canvasState.srcUrl = effUrl;
             canvasState.pendingSrc = '';
 
             canvasState.active = true;
@@ -731,7 +745,7 @@
             canvasState.pendingSrc = '';
             deactivateCanvas(true);
         };
-        loader.src = img.url;
+        loader.src = effUrl;
     }
 
     function hideNativeShowing(hide) {
@@ -1099,16 +1113,24 @@
         resetProgressVisual();
     }
 
-    function startProgressFor(index) {
-        if (!PROGRESS.enabled) return;
-        if (!mounted) return;
-        if (index < 0 || index >= state.images.length) return;
-        const img = state.images[index];
-        if (!img) return;
-        const cell = state.thumbEls.get(index);
-        if (!cell) return;
-        const els = getProgressEls(cell);
-        if (!els) return;
+function startProgressFor(index) {
+    if (!PROGRESS.enabled) return;
+    if (!mounted) return;
+    if (index < 0 || index >= state.images.length) return;
+    const img = state.images[index];
+    if (!img) return;
+
+    // === 新增：tif/tiff 不顯示載入百分比 ===
+    if (isImageName(img.name)) {
+        const ext = String(img.name).split('.').pop();
+        if (ext === 'tif' || ext === 'tiff') return;
+    }
+    // === 新增結束 ===
+
+    const cell = state.thumbEls.get(index);
+    if (!cell) return;
+    const els = getProgressEls(cell);
+    if (!els) return;
 
         if (progressState.el && progressState.el !== els.el) {
             progressState.el.classList.remove('is-active');

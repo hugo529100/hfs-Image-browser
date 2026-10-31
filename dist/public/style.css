@@ -743,3 +743,7 @@ body.theme-dark .file-show .showing-container .ib-huge-hint {
     display: none;
     background: transparent;
 }
+
+#root .file-show audio.showing, #root .file-show img.showing {
+    z-index: 3;
+}
