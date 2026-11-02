@@ -13,6 +13,13 @@
     --ib-tab-size: 22px;
 }
 
+#menu-entry-zoom,
+#menu-entry-fullscreen,
+#menu-entry-shuffle,
+#menu-entry-repeat {
+    display: none;
+}
+
 /* ============================================================
    Strip container
    ============================================================ */
@@ -746,4 +753,13 @@ body.theme-dark .file-show .showing-container .ib-huge-hint {
 
 #root .file-show audio.showing, #root .file-show img.showing {
     z-index: 3;
+}
+
+:root .theme-dark .dialog-backdrop.ibhi-backdrop,
+:root .theme-dark .dialog-backdrop.ibhv-backdrop,
+.dialog-backdrop.ibhi-backdrop,
+.dialog-backdrop.ibhv-backdrop {
+    background-color: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
 }
