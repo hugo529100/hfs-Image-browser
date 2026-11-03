@@ -731,14 +731,6 @@ body.theme-dark .file-show .showing-container .ib-huge-hint {
     }
 }
 
-.file-show .main > .nav,
-.file-show .showing-container > .nav,
-.file-show > .contain > .main > .nav {
-    display: none !important;
-    visibility: hidden !important;
-    pointer-events: none !important;
-}
-
 /* Canvas 局部渲染层（超级大图专用，体积 >= canvasThresholdMb） */
 .file-show .showing-container .ib-canvas-layer {
     position: absolute;
@@ -762,4 +754,25 @@ body.theme-dark .file-show .showing-container .ib-huge-hint {
     background-color: transparent;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
+}
+
+/* ============================================================
+   Left/right nav buttons:
+   hidden while the thumbnail strip is expanded,
+   shown again when the strip is collapsed.
+   ============================================================ */
+
+/* 默认（缩略图条展开时）：隐藏导航按钮 */
+.file-show > .contain .main > .nav,
+.file-show > .contain .showing-container > .nav {
+    display: none;
+}
+
+/* 收纳状态：重新显示导航按钮。
+   用 :has() 反选到前面的 .main，优先级也更高，故无需 !important */
+.file-show > .contain:has(> .ib-strip-container.ib-collapsed) .main > .nav,
+.file-show > .contain:has(> .ib-strip-container.ib-collapsed) .showing-container > .nav {
+    display: flex;
+    visibility: visible;
+    pointer-events: auto;
 }
