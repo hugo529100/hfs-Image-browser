@@ -3,6 +3,10 @@ High-efficiency Picasa-style image browser with thumbnail strip, progressive pre
 
 
 
+https://github.com/user-attachments/assets/1a3f17e8-ecb9-461e-bc68-25581fe4717f
+
+
+
 https://github.com/user-attachments/assets/8e75675f-e19c-48b8-9e77-8d118cbef380
 
 
