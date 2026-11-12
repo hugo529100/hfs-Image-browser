@@ -154,7 +154,7 @@
 
     const IMG_EXTS = [
         'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp',
-        'svg', 'avif', 'ico', 'tif', 'tiff'
+        'svg', 'avif', 'ico', 'tif', 'tiff', 'psd'
     ];
     function isImageExt(ext) {
         if (!ext) return false;
@@ -165,18 +165,25 @@
         return isImageExt(String(name).split('.').pop());
     }
 
-    // main.js —— 新增一個輔助函式（放在 isImageName 附近）
-function getEffectiveImageUrl(img) {
-    if (!img || !img.url) return '';
-    const name = img.name || String(img.url).split('?')[0].split('/').pop();
-    if (!name) return img.url;
-    const ext = String(name).split('.').pop().toLowerCase();
-    if (ext === 'tif' || ext === 'tiff') {
-        const sep = img.url.includes('?') ? '&' : '?';
-        return img.url + sep + 'convert=tiff';
+    function getEffectiveImageUrl(img) {
+        if (!img || !img.url) return '';
+        const name = img.name || String(img.url).split('?')[0].split('/').pop();
+        if (!name) return img.url;
+        const ext = String(name).split('.').pop().toLowerCase();
+        if (ext === 'tif' || ext === 'tiff') {
+            const sep = img.url.includes('?') ? '&' : '?';
+            return img.url + sep + 'convert=tiff';
+        }
+        if (ext === 'bmp') {
+            const sep = img.url.includes('?') ? '&' : '?';
+            return img.url + sep + 'convert=bmp';
+        }
+        if (ext === 'psd') {
+            const sep = img.url.includes('?') ? '&' : '?';
+            return img.url + sep + 'convert=psd';
+        }
+        return img.url;
     }
-    return img.url;
-}
 
     function formatBytes(n) {
         if (n === null || n === undefined || isNaN(n)) return '';
@@ -274,6 +281,14 @@ function getEffectiveImageUrl(img) {
         gateIndex: -1,
     };
 
+    // === PATCH B：記錄攔截前的原始 src，供 mount() 推導路徑 ===
+    let preInterceptSrc = '';
+    // === PATCH B END ===
+
+    // === PATCH 1：首屏原生攔截標記 ===
+    let bootInterceptDone = false;
+    // === PATCH 1 END ===
+
     function closeGate(index) {
         hugeState.gateClosed = true;
         hugeState.gateIndex = index;
@@ -315,7 +330,12 @@ function getEffectiveImageUrl(img) {
                 showingNow.removeAttribute('srcset');
                 showingNow.setAttribute('loading', 'lazy');
                 showingNow.style.setProperty('opacity', '0', 'important');
-                showingNow.src = BLANK_PIXEL;
+                // === PATCH 2：不要在这里无条件覆盖成 BLANK_PIXEL，
+                // 若已有缩略图（非 data:）保留它，避免倒计时期间黑屏 ===
+                if (!cur || cur.startsWith('data:')) {
+                    showingNow.src = BLANK_PIXEL;
+                }
+                // === PATCH 2 END ===
             } catch (e) { }
         }
         closeGate(index);
@@ -425,14 +445,14 @@ function getEffectiveImageUrl(img) {
         return img.closest('.showing-container') || img.parentElement || null;
     }
 
-function isImageAlreadyLoaded(img) {
-    if (!img) return false;
-    const showing = getMainImage();
-    if (!showing || !showing.complete || !showing.naturalWidth) return false;
-    const src = showing.getAttribute('src') || '';
-    if (!src || src.startsWith('blob:') || src.startsWith('data:')) return false;
-    return normalizeUrl(src) === normalizeUrl(getEffectiveImageUrl(img));
-}
+    function isImageAlreadyLoaded(img) {
+        if (!img) return false;
+        const showing = getMainImage();
+        if (!showing || !showing.complete || !showing.naturalWidth) return false;
+        const src = showing.getAttribute('src') || '';
+        if (!src || src.startsWith('blob:') || src.startsWith('data:')) return false;
+        return normalizeUrl(src) === normalizeUrl(getEffectiveImageUrl(img));
+    }
 
     function loadMainImageNative(img) {
         if (!img || !img.url) return;
@@ -514,10 +534,6 @@ function isImageAlreadyLoaded(img) {
         pinchStartCenterY: 0,
     };
 
-    // ============================================================
-    // Canvas 局部渲染（仅用于超级大图，体积 >= canvasThresholdMb）
-    // 注意：超级大图仍然照常走倒计时/闸门，放行后才用 Canvas 渲染
-    // ============================================================
     const canvasState = {
         el: null,
         ctx: null,
@@ -532,8 +548,6 @@ function isImageAlreadyLoaded(img) {
         renderPending: false,
     };
 
-    // 源图降采样上限：长边超过此值时用 createImageBitmap 预缩小，
-    // 避免每帧从巨大的原图纹理采样导致卡顿。
     const MAX_SOURCE_EDGE = 8192;
 
     function getCanvasLayer() {
@@ -580,7 +594,6 @@ function isImageAlreadyLoaded(img) {
         const cv = canvasState.el;
         const container = getShowingContainerEl();
         if (!cv || !container) return;
-        // DPR 上限从 2 降到 1.5：高倍放大时源图本身已插值，画布无需过采样
         const dpr = Math.max(1, Math.min(1.5, window.devicePixelRatio || 1));
         const cw = Math.max(1, container.clientWidth);
         const ch = Math.max(1, container.clientHeight);
@@ -679,7 +692,7 @@ function isImageAlreadyLoaded(img) {
         if (!canvasState.el) return;
 
         const effUrl = getEffectiveImageUrl(img);
-if (canvasState.srcUrl === effUrl && canvasState.image) {
+        if (canvasState.srcUrl === effUrl && canvasState.image) {
             canvasState.active = true;
             canvasState.el.style.display = 'block';
             hideNativeShowing(true);
@@ -703,8 +716,6 @@ if (canvasState.srcUrl === effUrl && canvasState.image) {
             let sw = nw;
             let sh = nh;
 
-            // 降采样：长边超过 MAX_SOURCE_EDGE 时用 createImageBitmap 预缩小，
-            // 之后所有绘制都从降采样图采样，避免每帧处理超大原图纹理。
             const maxEdge = Math.max(nw, nh);
             if (maxEdge > MAX_SOURCE_EDGE && typeof createImageBitmap === 'function') {
                 const ratio = MAX_SOURCE_EDGE / maxEdge;
@@ -797,7 +808,6 @@ if (canvasState.srcUrl === effUrl && canvasState.image) {
         const img = getMainImage();
         if (!img) return;
 
-        // Canvas 模式下：不改 img transform，改为重绘 Canvas
         if (canvasState.active) {
             hideNativeShowing(true);
             scheduleCanvasRender();
@@ -805,7 +815,6 @@ if (canvasState.srcUrl === effUrl && canvasState.image) {
             return;
         }
 
-        // 过渡完全由 animated 决定：true 平滑缩放，false 硬性即时（拖拽/平移跟手）
         img.style.transition = animated ? 'transform 0.2s ease-out' : 'none';
         img.style.transformOrigin = 'center center';
         img.style.transform =
@@ -827,8 +836,6 @@ if (canvasState.srcUrl === effUrl && canvasState.image) {
         if (!container) return;
         const cw = container.clientWidth;
         const ch = container.clientHeight;
-        // Canvas 模式下 naturalWidth/Height 可能为 0（img 被隐藏但仍有原图 src 尺寸），
-        // 优先使用 canvasState 的尺寸
         let nw = img.naturalWidth || 0;
         let nh = img.naturalHeight || 0;
         if (canvasState.active && canvasState.naturalW && canvasState.naturalH) {
@@ -845,9 +852,6 @@ if (canvasState.srcUrl === effUrl && canvasState.image) {
         zoomState.translateY = Math.max(-maxY, Math.min(maxY, zoomState.translateY));
     }
 
-    // 以「当前可见屏幕中心」为轴心缩放：
-    // 视口中心对应图片点 p = -t/s，缩放后保持该点在视口中心 → t' = t * (s'/s)
-    // factor 为正数时表示目标缩放值；direction 为 ±1 时按 STEP 步进。
     function zoomImage(direction, factor) {
         const oldScale = zoomState.scale;
         let newScale;
@@ -960,8 +964,6 @@ if (canvasState.srcUrl === effUrl && canvasState.image) {
             const cx = (t1.clientX + t2.clientX) / 2;
             const cy = (t1.clientY + t2.clientY) / 2;
 
-            // Canvas 模式：以容器中心為基準（與 renderCanvas 座標系一致）
-            // 原生模式：以圖片 rect 中心為基準
             let baseRect;
             if (canvasState.active) {
                 const container = getShowingContainerEl();
@@ -1113,24 +1115,22 @@ if (canvasState.srcUrl === effUrl && canvasState.image) {
         resetProgressVisual();
     }
 
-function startProgressFor(index) {
-    if (!PROGRESS.enabled) return;
-    if (!mounted) return;
-    if (index < 0 || index >= state.images.length) return;
-    const img = state.images[index];
-    if (!img) return;
+    function startProgressFor(index) {
+        if (!PROGRESS.enabled) return;
+        if (!mounted) return;
+        if (index < 0 || index >= state.images.length) return;
+        const img = state.images[index];
+        if (!img) return;
 
-    // === 新增：tif/tiff 不顯示載入百分比 ===
-    if (isImageName(img.name)) {
-        const ext = String(img.name).split('.').pop();
-        if (ext === 'tif' || ext === 'tiff') return;
-    }
-    // === 新增結束 ===
+        if (isImageName(img.name)) {
+            const ext = String(img.name).split('.').pop().toLowerCase();
+            if (ext === 'tif' || ext === 'tiff' || ext === 'bmp' || ext === 'psd') return;
+        }
 
-    const cell = state.thumbEls.get(index);
-    if (!cell) return;
-    const els = getProgressEls(cell);
-    if (!els) return;
+        const cell = state.thumbEls.get(index);
+        if (!cell) return;
+        const els = getProgressEls(cell);
+        if (!els) return;
 
         if (progressState.el && progressState.el !== els.el) {
             progressState.el.classList.remove('is-active');
@@ -1384,7 +1384,6 @@ function startProgressFor(index) {
             }
             clearHfsLoadingState(showing);
 
-            // 邪修闸门：每次导航先摘掉 img.showing 的原图 src，阻止 HFS 原生加载
             try {
                 showing.setAttribute('loading', 'lazy');
                 showing.src = BLANK_PIXEL;
@@ -1460,7 +1459,6 @@ function startProgressFor(index) {
         const showing = document.querySelector('.file-show img.showing');
         if (!showing) return;
 
-        // 已加载且非 Canvas 图：直接复用
         if (isImageAlreadyLoaded(img) && !shouldUseCanvas(img)) {
             clearHugeOverlay();
             deactivateCanvas(false);
@@ -1468,7 +1466,6 @@ function startProgressFor(index) {
             return;
         }
 
-        // 大图未放行：照常弹倒计时（超级大图也走这里）
         if (isHugeImage(img) && !force) {
             if (!(hugeState.el && hugeState.targetIndex === index)) {
                 startHugeCountdown(index);
@@ -1480,7 +1477,6 @@ function startProgressFor(index) {
         clearHugeOverlay();
         armProgressivePreview(img);
 
-        // 放行后：超级大图走 Canvas 局部绘制，其余走原生 img
         if (shouldUseCanvas(img)) {
             const showingNow = getMainImage();
             if (showingNow) {
@@ -1552,10 +1548,16 @@ function startProgressFor(index) {
         }
     }
 
+    // === PATCH C：拒絕非 HTTP 路徑，防止 data:/blob:/空字串打入 API ===
     async function fetchImageList(folderUri) {
         if (state.listFetching) return;
         if (state.listFetchedFor === folderUri) return;
+        if (!folderUri ||
+            !(folderUri.startsWith('/') || /^https?:\/\//i.test(folderUri))) {
+            return;
+        }
         state.listFetching = true;
+        // === PATCH C END ===
         try {
             const apiUrl = `/~/api/get_file_list?uri=${encodeURIComponent(folderUri)}`;
             const res = await fetch(apiUrl, {
@@ -1575,10 +1577,21 @@ function startProgressFor(index) {
                 .filter(it => it && it.n && isImageName(it.n))
                 .map(it => {
                     const url = baseUri + it.n;
+                    const ext = String(it.n).split('.').pop().toLowerCase();
+                    let thumbUrl;
+                    if (ext === 'tif' || ext === 'tiff') {
+                        thumbUrl = url + (url.includes('?') ? '&' : '?') + 'get=thumbtiff';
+                    } else if (ext === 'bmp') {
+                        thumbUrl = url + (url.includes('?') ? '&' : '?') + 'get=thumbbmp';
+                    } else if (ext === 'psd') {
+                        thumbUrl = url + (url.includes('?') ? '&' : '?') + 'get=thumbpsd';
+                    } else {
+                        thumbUrl = url + (url.includes('?') ? '&' : '?') + 'get=thumb';
+                    }
                     return {
                         name: it.n,
                         url: url,
-                        thumbUrl: url + (url.includes('?') ? '&' : '?') + 'get=thumb',
+                        thumbUrl: thumbUrl,
                         size: (it.s !== undefined && it.s !== null) ? it.s : null,
                         ctime: toTs(it.c),
                         mtime: toTs(it.m),
@@ -1752,9 +1765,15 @@ function startProgressFor(index) {
                 }
                 state.pendingLoadIndex = -1;
                 startHugeCountdown(index);
+                // === PATCH 3：倒计时立起来后再挂缩略图，避免被 startHugeCountdown 抹掉 ===
+                interceptShowingWithThumb(targetImg);
+                // === PATCH 3 END ===
             } else {
                 openGate(index);
                 scheduleLoad(index);
+                // === PATCH 3：小图也先顶上缩略图，避免 scheduleLoad 延时期间黑屏 ===
+                interceptShowingWithThumb(targetImg);
+                // === PATCH 3 END ===
             }
         }
     }
@@ -2202,7 +2221,12 @@ function startProgressFor(index) {
         im.onerror = () => {
             if (im.dataset.fallback) return;
             im.dataset.fallback = '1';
-            im.src = img.url;
+            const ext = String(img.name || '').split('.').pop().toLowerCase();
+            if (ext === 'bmp' || ext === 'psd' || ext === 'tif' || ext === 'tiff') {
+                im.src = getEffectiveImageUrl(img);
+            } else {
+                im.src = img.url;
+            }
         };
         im.src = img.thumbUrl;
         frame.appendChild(im);
@@ -2357,7 +2381,6 @@ function startProgressFor(index) {
                         e.key === 'ArrowUp' || e.key === 'ArrowDown';
 
         if (isArrow) {
-            // 放大模式：方向鍵平移圖片（平緩移動放大的視窗位置）
             if (zoomState.scale > 1) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -2368,7 +2391,6 @@ function startProgressFor(index) {
                 else if (e.key === 'ArrowDown') panZoomBy(0, -step);
                 return;
             }
-            // 非放大模式：左右鍵切換照片
             if (e.key === 'ArrowLeft') {
                 e.preventDefault(); e.stopPropagation(); navigatePrev();
             } else if (e.key === 'ArrowRight') {
@@ -2434,10 +2456,12 @@ function startProgressFor(index) {
             if (img && isHugeImage(img)) {
                 if (!(hugeState.el && hugeState.targetIndex === state.currentIndex)) {
                     startHugeCountdown(state.currentIndex);
+                    interceptShowingWithThumb(img);   // === PATCH 3 ===
                 }
             } else {
                 openGate(state.currentIndex);
                 scheduleLoad(state.currentIndex);
+                if (img) interceptShowingWithThumb(img);   // === PATCH 3 ===
             }
         }
         strip.addEventListener('touchstart', onTouchStart, { passive: true });
@@ -2478,18 +2502,96 @@ function startProgressFor(index) {
     let mounted = false;
     let mountInProgress = false;
 
+    // === PATCH 4：首屏拦截辅助函数 ===
+    // 把 img.showing 的 src 换成缩略图（或 BLANK_PIXEL），并关闸，
+    // 等待 mount 流程里的 startHugeCountdown / scheduleLoad 接管。
+    function interceptShowingWithThumb(img) {
+        if (!img) return;
+        const showing = getMainImage();
+        if (!showing) return;
+        const cur = showing.getAttribute('src') || '';
+        if (cur && !cur.startsWith('data:') && !cur.startsWith('blob:')) {
+            hugeState.parkedSrc = cur;
+        }
+        try { showing.removeAttribute('srcset'); } catch (e) { }
+        showing.setAttribute('loading', 'lazy');
+        try { showing.style.setProperty('opacity', '0', 'important'); } catch (e) { }
+        const thumb = getReadyThumbSrc(img, state.currentIndex);
+        if (thumb) {
+            showing.src = thumb;
+            try { showing.style.removeProperty('opacity'); } catch (e) { }
+        } else {
+            showing.src = BLANK_PIXEL;
+        }
+        closeGate(-1);
+    }
+
+    // 在插件 mount 之前，把 HFS 已挂上的原图 src 换掉，
+    // 避免 25MB 大图把界面卡在黑色加载态。
+    function interceptNativeFirstShowing() {
+        if (bootInterceptDone) return;
+        const showing = document.querySelector('.file-show img.showing');
+        if (!showing) return;
+        const src = showing.getAttribute('src') || '';
+        if (!src || src.startsWith('data:') || src.startsWith('blob:')) return;
+
+        // === PATCH B：記錄攔截前的原始 src ===
+        if (!preInterceptSrc) preInterceptSrc = src;
+        // === PATCH B END ===
+
+        let replaced = false;
+        if (state.images.length > 0) {
+            const name = decodeURIComponent(src.split('/').pop().split('?')[0]);
+            const hit = state.images.find(i => i.name === name);
+            if (hit && hit.thumbUrl) {
+                try { showing.removeAttribute('srcset'); } catch (e) { }
+                showing.setAttribute('loading', 'lazy');
+                try { showing.style.setProperty('opacity', '0', 'important'); } catch (e) { }
+                showing.src = hit.thumbUrl;
+                replaced = true;
+            }
+        }
+        if (!replaced) {
+            try { showing.removeAttribute('srcset'); } catch (e) { }
+            showing.setAttribute('loading', 'lazy');
+            try { showing.style.setProperty('opacity', '0', 'important'); } catch (e) { }
+            showing.src = BLANK_PIXEL;
+        }
+        closeGate(-1);
+        bootInterceptDone = true;
+    }
+    // === PATCH 4 END ===
+
     async function mount() {
         if (mountInProgress) return;
         const viewer = document.querySelector('.file-show');
         if (!viewer) return;
         const showing = viewer.querySelector('img.showing');
         if (!showing) return;
+
+        // === PATCH A：不依賴 showing.src（可能已被攔截換成 data:/縮略圖） ===
         const src = showing.getAttribute('src') || '';
-        const isObjectUrl = src.startsWith('blob:');
-        const isBlankPixel = src.startsWith('data:');
-        if (!isObjectUrl && !isBlankPixel && !isImageName(src.split('?')[0].split('/').pop())) {
-            if (!state.lastKnownName) return;
+        const rawSrc = preInterceptSrc || src;
+        const isObjectUrl = rawSrc.startsWith('blob:');
+        const isBlankPixel = rawSrc.startsWith('data:');
+
+        function nameFromLocation() {
+            try {
+                const p = decodeURIComponent(location.pathname || '');
+                return p.split('/').pop().split('?')[0] || '';
+            } catch (e) {
+                return '';
+            }
         }
+
+        let currentName = '';
+        if (!isObjectUrl && !isBlankPixel) {
+            const baseName = decodeURIComponent(rawSrc.split('?')[0].split('/').pop() || '');
+            if (isImageName(baseName)) currentName = baseName;
+        }
+        if (!currentName) currentName = state.lastKnownName || nameFromLocation();
+        if (!currentName && !isBlankPixel && !isObjectUrl) return;
+
         const stripInThisViewer = viewer.querySelector('.ib-strip-container');
         if (mounted && state.stripEl && stripInThisViewer === state.stripEl) {
             healThumbnails();
@@ -2503,26 +2605,35 @@ function startProgressFor(index) {
         mountInProgress = true;
         try {
             if (mounted) unmount();
+
+            // folderUri：優先 lastKnownName 所屬目錄 → location.pathname → rawSrc
             let folderUri = '';
             if (state.lastKnownName && state.images.length > 0) {
                 const firstUrl = state.images[0].url;
                 const lastSlash = firstUrl.lastIndexOf('/');
                 folderUri = lastSlash >= 0 ? firstUrl.substring(0, lastSlash + 1) : '';
-            } else {
-                const url = src.split('?')[0];
-                const lastSlash = url.lastIndexOf('/');
-                folderUri = lastSlash >= 0 ? url.substring(0, lastSlash + 1) : '';
             }
+            if (!folderUri) {
+                try {
+                    const p = decodeURIComponent(location.pathname || '');
+                    const lastSlash = p.lastIndexOf('/');
+                    folderUri = lastSlash >= 0 ? p.substring(0, lastSlash + 1) : '';
+                } catch (e) { folderUri = ''; }
+            }
+            if (!folderUri && !isObjectUrl && !isBlankPixel) {
+                const lastSlash = rawSrc.lastIndexOf('/');
+                if (lastSlash >= 0) folderUri = rawSrc.substring(0, lastSlash + 1);
+            }
+
             await fetchImageList(folderUri);
             if (state.images.length === 0) return;
-            let currentName = state.lastKnownName;
-            if (!currentName) {
-                currentName = decodeURIComponent(src.split('/').pop().split('?')[0]);
-            }
+
             let idx = state.images.findIndex(i => i.name === currentName);
             if (idx < 0) idx = 0;
             state.currentIndex = idx;
             state.lastKnownName = currentName;
+            // === PATCH A END ===
+
             const contain = viewer.querySelector('.contain') || viewer.firstElementChild;
             if (!contain) return;
             contain.style.display = 'flex';
@@ -2562,15 +2673,22 @@ function startProgressFor(index) {
             setTimeout(() => { detectJumpMode(); }, 500);
             if (state.images[idx]) {
                 const firstImg = state.images[idx];
+
+                // === PATCH 5：首屏防卡黑，统一先顶上缩略图再决定何时放原图 ===
                 if (isImageAlreadyLoaded(firstImg) && !shouldUseCanvas(firstImg)) {
                     armProgressivePreview(firstImg);
                 } else if (isHugeImage(firstImg)) {
                     armProgressivePreview(firstImg);
                     startHugeCountdown(idx);
+                    // 倒计时立起来后再挂缩略图，避免被 startHugeCountdown 抹掉
+                    interceptShowingWithThumb(firstImg);
                 } else {
                     openGate(idx);
-                    doLoadMainImage(idx);
+                    scheduleLoad(idx);
+                    // 小图也先顶上缩略图，避免 scheduleLoad 延时期间黑屏
+                    interceptShowingWithThumb(firstImg);
                 }
+                // === PATCH 5 END ===
             }
         } finally {
             mountInProgress = false;
@@ -2677,6 +2795,10 @@ function startProgressFor(index) {
         state.mountedAt = 0;
         state.metaCache.clear();
         mounted = false;
+        // === PATCH 6：SPA 切换目录时允许重新拦截 ===
+        bootInterceptDone = false;
+        preInterceptSrc = '';   // === PATCH B：重置攔截前 src ===
+        // === PATCH 6 END ===
         if (state.resizeReloadTimer) {
             clearTimeout(state.resizeReloadTimer);
             state.resizeReloadTimer = null;
@@ -2839,7 +2961,15 @@ function startProgressFor(index) {
     }
 
     function startObserver() {
-        const mo = new MutationObserver(schedule);
+        // === PATCH 7：先手拦截（此时可能还没有 .showing，晚一点再说） ===
+        interceptNativeFirstShowing();
+        // === PATCH 7 END ===
+        const mo = new MutationObserver(() => {
+            // === PATCH 7：每次 DOM 变动都尝试，直到 done ===
+            interceptNativeFirstShowing();
+            // === PATCH 7 END ===
+            schedule();
+        });
         mo.observe(document.documentElement || document.body, {
             childList: true,
             subtree: true,
@@ -2898,6 +3028,8 @@ function startProgressFor(index) {
         isHugeImage, isImageAlreadyLoaded,
         loadMainImageNative,
         closeGate, openGate,
+        interceptShowingWithThumb,
+        interceptNativeFirstShowing,
         resetDetect: () => { state.nextButtonSide = 'right'; state.jumpMode = null; },
         refresh: () => { state.listFetchedFor = ''; schedule(); },
     };
@@ -2905,6 +3037,9 @@ function startProgressFor(index) {
     function boot() {
         loadConfig();
         injectCssVars();
+        // === PATCH 8：boot 同步段先尝试拦截一次 ===
+        interceptNativeFirstShowing();
+        // === PATCH 8 END ===
         startObserver();
     }
 
