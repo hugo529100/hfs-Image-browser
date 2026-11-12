@@ -1269,6 +1269,7 @@
 
         const boundShowing = showing;
         const boundPreviewImg = pImg;
+        const targetUrlNorm = normalizeUrl(getEffectiveImageUrl(img));
         let finalized = false;
 
         const isShowingReady = () => {
@@ -1276,7 +1277,10 @@
             if (!boundShowing.complete || !boundShowing.naturalWidth) return false;
             const s = boundShowing.getAttribute('src') || '';
             if (s.startsWith('data:')) return false;
-            return true;
+            // === PATCH D：只有 src 真的是目標原圖（或其轉換 URL）時才算 ready，
+            // 避免縮略圖 load 完成就誤判為原圖已就緒 ===
+            return normalizeUrl(s) === targetUrlNorm;
+            // === PATCH D END ===
         };
 
         const finalize = () => {
@@ -2523,7 +2527,10 @@
         } else {
             showing.src = BLANK_PIXEL;
         }
-        closeGate(-1);
+        // === PATCH FIX GATE：閘門狀態由呼叫方控制（startHugeCountdown / openGate /
+        // interceptNativeFirstShowing），此處不再 closeGate(-1)，
+        // 否則小圖路徑 scheduleLoad 到點後 loadMainImageNative 會被 gateClosed 擋掉，
+        // 導致原圖永遠不載入。 ===
     }
 
     // 在插件 mount 之前，把 HFS 已挂上的原图 src 换掉，
