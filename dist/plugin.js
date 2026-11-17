@@ -1,4 +1,4 @@
-exports.version = 5.6;
+exports.version = 6.0;
 exports.apiRequired = 10.0;
 exports.repo = "Hug3O/Image-browser";
 exports.description = "High-efficiency Picasa-style image browser with thumbnail strip, progressive preview, and smart deferred loading.";
@@ -6,6 +6,8 @@ exports.depend = [{ "repo": "rejetto/thumbnails", "version": 4 }]
 exports.frontend_js = ['main.js', 'fileshow-help-image.js'];
 exports.frontend_css = ['style.css'];
 exports.changelog = [
+    { version: 5.8, message: "Dragging the thumbnail strip updates the main viewer live again, but through a single reused overlay <img> instead of a full navigateTo(): images already shown in this session display at full resolution from cache, unseen ones show their already-decoded thumbnail instantly and upgrade to the original after a 180ms dwell (huge images stay on the thumbnail). The overlay is handed over to the normal loader and removed only once the real image is painted, so there is no black flash and no flash back to the previous image." },
+    { version: 5.7, message: "Touch/mobile fix: dragging the thumbnail strip no longer runs a full navigation (pushState + HFS redraw + image swap + HEAD request) on every 60ms tick, no longer reads getBoundingClientRect() for every rendered thumb on each move, and no longer fights centerOnIndex()'s centering transition. Touchmove is now coalesced into one rAF transform write with arithmetic hit-testing; navigation is committed once on release. Also removed the strip's backdrop-filter blur, per-thumb will-change layers and per-switch transitions while dragging." },
     { version: 5.5, message: "First-open interception: original image src is swapped to its thumbnail (or a blank pixel) before mount, so huge images no longer block the viewer in a black screen; countdown/gate now overlays the thumbnail instead of a blank frame. Fixed folderUri/currentName derivation when showing.src was already replaced." },
     { version: 5.4, message: "Added 'Super Huge Image Threshold (MB)': images >= this size still follow countdown/gate, then render via Canvas local drawing for smooth zoom/pan. Configurable in backend." },
     { version: 4.6, message: "Added 'Super Huge Image Threshold (MB)': images >= this size still follow countdown/gate, then render via Canvas local drawing for smooth zoom/pan. Configurable in backend." },
@@ -138,6 +140,8 @@ exports.configDialog = {
 };
 
 exports.changelog = [
+    { version: 5.8, message: "Dragging the thumbnail strip updates the main viewer live again, but through a single reused overlay <img> instead of a full navigateTo(): images already shown in this session display at full resolution from cache, unseen ones show their already-decoded thumbnail instantly and upgrade to the original after a 180ms dwell (huge images stay on the thumbnail). The overlay is handed over to the normal loader and removed only once the real image is painted." },
+    { version: 5.7, message: "Touch/mobile fix: dragging the thumbnail strip no longer runs a full navigation (pushState + HFS redraw + image swap + HEAD request) on every 60ms tick, no longer reads getBoundingClientRect() for every rendered thumb on each move, and no longer fights centerOnIndex()'s centering transition." },
     { version: 4.6, message: "Added 'Super Huge Image Threshold (MB)': images >= this size still follow countdown/gate, then render via Canvas local drawing for smooth zoom/pan. Configurable in backend." },
     { version: 4.4, message: "Removed preloadCount (conflicts with gate/countdown throttling)." },
     { version: 4.3, message: "Rearranged config dialog: 'Large Images' (threshold + countdown) first, 'Thumbnails' second." },

@@ -317,22 +317,30 @@
         scope.querySelectorAll('.dialog').forEach(rewriteHelpDialog);
     }
 
+    // 是否正在拖曳縮圖條（由 main.js 維護）；拖曳期間不做全頁掃描
+    function stripIsDragging() {
+        const st = window.ImageBrowser && window.ImageBrowser.state;
+        return !!(st && st.dragging);
+    }
+
     function boot() {
         injectStyle();
         patchAllHelpButtons();
         document.addEventListener('click', onDocumentClickCapture, true);
 
-        const mo = new MutationObserver(muts => {
-            if (!isImageMode()) return;
-            for (const m of muts) {
-                if (m.type !== 'childList') continue;
-                m.addedNodes.forEach(n => {
-                    if (n.nodeType !== 1) return;
-                    if (n.classList && n.classList.contains('dialog')) rewriteHelpDialog(n);
-                    else if (n.querySelectorAll) scanDialogs(n);
-                });
-            }
-            patchAllHelpButtons();
+        // 舊版對整份文件監看 childList + characterData + attributes，
+        // 每換一張圖（計數器文字、title）就同步掃一遍全頁。
+        // 改成 rAF 合併，且拖曳期間直接跳過。
+        let moFrame = 0;
+        const mo = new MutationObserver(() => {
+            if (stripIsDragging()) return;
+            if (moFrame) return;
+            moFrame = requestAnimationFrame(() => {
+                moFrame = 0;
+                if (!isImageMode()) return;
+                scanDialogs(document);
+                patchAllHelpButtons();
+            });
         });
         mo.observe(document.documentElement || document.body, {
             childList: true,
@@ -346,6 +354,7 @@
         patchAllHelpButtons();
 
         setInterval(() => {
+            if (stripIsDragging()) return;
             if (isImageMode()) patchAllHelpButtons();
         }, 1000);
     }

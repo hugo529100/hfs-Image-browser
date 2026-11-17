@@ -31,14 +31,18 @@
     min-height: calc(var(--ib-thumb-h) + 40px);
     flex: 0 0 auto;
     background: rgba(0, 0, 0, 0.95);
-    backdrop-filter: blur(4px);
     overflow: hidden;
     position: relative;
     border-top: 1px solid rgba(255, 255, 255, 0.1);
     z-index: 50;
     user-select: none;
+    /* 拖曳條只需要水平手勢；垂直留給瀏覽器 */
     touch-action: pan-y;
-    -webkit-overflow-scrolling: touch;
+    /* 把縮圖條隔離成獨立的版面/繪製容器：
+       拖曳時不會連帶讓主圖區重新排版，也避免背景模糊每幀重算。
+       （原本的 backdrop-filter: blur(4px) 搭配會動的 track，
+       在 iPad/WebKit 上等於每一幀都要重新取樣背景，是最大宗的掉幀來源） */
+    contain: layout paint;
     transition: opacity 0.22s ease;
 }
 
@@ -59,8 +63,7 @@
 
 .ib-strip-container.ib-collapsed .ib-collapse-tab {
     pointer-events: auto;
-    background: rgba(0, 0, 0, 0.55);
-    backdrop-filter: blur(4px);
+    background: rgba(0, 0, 0, 0.62);
     border-color: rgba(255, 255, 255, 0.15);
 }
 
@@ -78,7 +81,8 @@
     align-items: center;
     gap: var(--ib-thumb-gap);
     padding: 0;
-    will-change: transform, opacity;
+    /* 只需要 transform 的圖層提示；opacity 一併宣告會多留一層合成 */
+    will-change: transform;
     position: absolute;
     left: 0;
     top: 58%;
@@ -89,6 +93,32 @@
 
 .ib-strip-track.ib-no-transition {
     transition: none !important;
+}
+
+/* ============================================================
+   拖曳中（觸控）
+   手指在拖時只要 transform 跟手：關掉所有過場，
+   避免每個高亮切換都排一輪動畫（iPad 上這些過場就是掉幀來源）。
+   ============================================================ */
+.ib-strip-container.ib-dragging {
+    cursor: grabbing;
+}
+
+.ib-strip-container.ib-dragging .ib-strip-track {
+    transition: none !important;
+}
+
+.ib-strip-container.ib-dragging .ib-thumb,
+.ib-strip-container.ib-dragging .ib-thumb-frame,
+.ib-strip-container.ib-dragging .ib-thumb-frame img,
+.ib-strip-container.ib-dragging .ib-thumb-name,
+.ib-strip-container.ib-dragging .ib-thumb-progress {
+    transition: none !important;
+}
+
+/* 拖曳中不跑 18px 模糊陰影（每次換高亮都要重繪一次） */
+.ib-strip-container.ib-dragging .ib-thumb.ib-active .ib-thumb-frame {
+    box-shadow: none;
 }
 
 /* ============================================================
@@ -416,6 +446,14 @@
     object-position: center;
 }
 
+/* 拖曳縮圖條時的即時預覽層（由 main.js 動態建立、重用同一個 img）
+   必須蓋過 showing / canvas，但不能蓋過大圖倒數遮罩（z-index 10） */
+.file-show .showing-container .ib-drag-preview {
+    z-index: 4;
+    transition: none;
+    pointer-events: none;
+}
+
 /* ============================================================
    Thumbnail loading progress
    ============================================================ */
@@ -449,7 +487,6 @@
         color-mix(in srgb, var(--bg, #eaeaea) 55%, transparent) 100%
     );
     transition: transform 120ms linear;
-    will-change: transform;
 }
 
 .ib-thumb-progress-text {

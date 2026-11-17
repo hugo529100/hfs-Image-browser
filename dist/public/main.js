@@ -38,7 +38,12 @@
         { minSize: 3  * 1024 * 1024, delay: 1000 },
     ];
 
-    const DRAG_SWITCH_MIN_INTERVAL_MS = 60;
+    // 縮圖條拖曳參數
+    const DRAG_CFG = {
+        slopPx: 10,            // 水平位移超過此值才判定為拖曳（太小會把點擊誤判成拖曳）
+        switchIntervalMs: 90,  // 拖曳期間更新預覽／高亮的節流
+        dwellMs: 180,          // 停在同一格多久才把預覽升級成原圖
+    };
 
     const COLLAPSE_KEY = 'ib.collapsed';
 
@@ -268,6 +273,12 @@
         resizeReloadTimer: null,
         settleTimer: null,
         pendingLoadIndex: -1,
+
+        // === 縮圖條拖曳狀態 ===
+        dragging: false,          // 拖曳中：壓制 centerOnIndex / 全域 observer
+        dragPreviewIndex: -1,     // 拖曳期間手指所在（置中）的索引
+        activeClassIndex: -1,     // 目前掛著 .ib-active 的索引，供增量更新
+        trackX: 0,                // 目前 track 的 translateX（避免解析 style 字串）
     };
 
     const hugeState = {
@@ -454,6 +465,10 @@
         return normalizeUrl(src) === normalizeUrl(getEffectiveImageUrl(img));
     }
 
+    // 上一輪原生載入的 load/error 監聽（縮圖的 load 不會被當成原圖，
+    // 監聽要留到真正的原圖載入為止；這裡記錄起來，下一輪先清掉避免累積）
+    let mainLoadCleanup = null;
+
     function loadMainImageNative(img) {
         if (!img || !img.url) return;
         const showing = getMainImage();
@@ -483,22 +498,34 @@
         }
         showing.classList.remove('ib-fading');
 
+        const expected = normalizeUrl(getEffectiveImageUrl(img));
         const onReady = () => {
-            try { showing.removeEventListener('load', onReady); } catch (e) { }
-            try { showing.removeEventListener('error', onReady); } catch (e) { }
             if (!showing.naturalWidth) return;
             const s = showing.getAttribute('src') || '';
             if (s.startsWith('data:')) return;
+            // 縮圖 / 舊圖的 load 不算數，繼續等真正的原圖（避免提早收掉預覽層）
+            if (normalizeUrl(s) !== expected) return;
+            try { showing.removeEventListener('load', onReady); } catch (e) { }
+            try { showing.removeEventListener('error', onReady); } catch (e) { }
+            if (mainLoadCleanup && mainLoadCleanup.fn === onReady) mainLoadCleanup = null;
             try {
                 showing.style.removeProperty('opacity');
             } catch (e) {
                 showing.style.opacity = '';
             }
             finishProgress();
+            rememberLoadedFull(fullImageKey(img));
+            dropDragPreview();
         };
 
+        if (mainLoadCleanup) {
+            try { mainLoadCleanup.el.removeEventListener('load', mainLoadCleanup.fn); } catch (e) { }
+            try { mainLoadCleanup.el.removeEventListener('error', mainLoadCleanup.fn); } catch (e) { }
+            mainLoadCleanup = null;
+        }
         showing.addEventListener('load', onReady);
         showing.addEventListener('error', onReady);
+        mainLoadCleanup = { el: showing, fn: onReady };
 
         showing.src = getEffectiveImageUrl(img);
 
@@ -750,6 +777,8 @@
             hideNativeShowing(true);
             scheduleCanvasRender();
             finishProgress();
+            rememberLoadedFull(normalizeUrl(effUrl));
+            dropDragPreview();
         };
         loader.onerror = () => {
             if (token !== canvasState.loadToken) return;
@@ -1224,6 +1253,121 @@
         return img.thumbUrl;
     }
 
+    // ============================================================
+    // 拖曳時的即時預覽層
+    //
+    // 需求：拖縮圖條時，主圖區要像以前一樣「邊拖邊換圖」。
+    // 舊做法是每一格都 navigateTo()（pushState + HFS 重繪 + 換 src），
+    // 那就是卡頓的來源；這裡改成在 .showing-container 上疊「一張」預覽圖：
+    //   - 本頁顯示過的原圖 → 直接秀原圖（瀏覽器快取，零下載、全解析度）
+    //   - 沒看過的 → 先秀縮圖（條子上早已解碼，切換零成本）
+    //   - 停頓超過 dwellMs 且不是巨型圖 → 才升級下載原圖
+    // 放手後由 progressive preview / loadMainImageNative 接手，
+    // 直到「真正的大圖」載入完成才把這張預覽收掉，所以不會閃黑或閃回舊圖。
+    // ============================================================
+    const loadedFullUrls = new Set();
+    let dragPreviewEl = null;
+    let dragPreviewIndex = -1;
+    let dragPreviewTimer = 0;
+    let dragPreviewPendingFull = '';
+    let dragHidShowing = false;
+    let dragHidEl = null;
+
+    function fullImageKey(img) {
+        return normalizeUrl(getEffectiveImageUrl(img));
+    }
+
+    function rememberLoadedFull(key) {
+        if (key) loadedFullUrls.add(key);
+    }
+
+    function ensureDragPreview() {
+        if (dragPreviewEl && dragPreviewEl.isConnected) return dragPreviewEl;
+        dragPreviewEl = null;   // 舊節點已被 HFS 換掉 / cleanupMainImageInlineStyles 清掉
+        const container = getShowingContainerEl();
+        if (!container) return null;
+        const el = document.createElement('img');
+        el.className = 'ib-progressive-preview ib-drag-preview';
+        el.decoding = 'async';
+        el.draggable = false;
+        el.alt = '';
+        el.setAttribute('aria-hidden', 'true');
+        el.src = BLANK_PIXEL;
+        el.addEventListener('load', () => {
+            if (dragPreviewPendingFull && el === dragPreviewEl &&
+                el.getAttribute('src') === dragPreviewPendingFull) {
+                rememberLoadedFull(dragPreviewPendingFull);
+                dragPreviewPendingFull = '';
+            }
+        });
+        container.appendChild(el);
+        dragPreviewEl = el;
+        return el;
+    }
+
+    function hideShowingForDrag() {
+        const showing = getMainImage();
+        if (!showing) return;
+        try { showing.style.setProperty('opacity', '0', 'important'); } catch (e) { }
+        dragHidShowing = true;
+        dragHidEl = showing;
+    }
+
+    function showDragPreview(index) {
+        const img = state.images[index];
+        if (!img) return;
+        const el = ensureDragPreview();
+        if (!el) return;
+        hideShowingForDrag();
+        dragPreviewIndex = index;
+
+        const full = fullImageKey(img);
+        const showFull = loadedFullUrls.has(full);
+        const src = showFull
+            ? getEffectiveImageUrl(img)
+            : (getReadyThumbSrc(img, index) || BLANK_PIXEL);
+        if (el.getAttribute('src') !== src) el.src = src;
+
+        if (dragPreviewTimer) { clearTimeout(dragPreviewTimer); dragPreviewTimer = 0; }
+        if (!showFull && !isHugeImage(img) && !shouldUseCanvas(img)) {
+            const want = getEffectiveImageUrl(img);
+            dragPreviewTimer = setTimeout(() => {
+                dragPreviewTimer = 0;
+                if (!state.dragging || dragPreviewIndex !== index) return;
+                const cur = dragPreviewEl;
+                if (!cur || !cur.isConnected) return;
+                if (cur.getAttribute('src') === want) return;
+                dragPreviewPendingFull = want;
+                cur.src = want;   // 停頓才升級，快速掃過不會爆量下載
+            }, DRAG_CFG.dwellMs);
+        }
+    }
+
+    function clearDragPreview() {
+        if (dragPreviewTimer) { clearTimeout(dragPreviewTimer); dragPreviewTimer = 0; }
+        dragPreviewIndex = -1;
+        dragPreviewPendingFull = '';
+        if (dragPreviewEl) {
+            if (dragPreviewEl.parentNode) dragPreviewEl.remove();
+            dragPreviewEl = null;
+        }
+    }
+
+    function dropDragPreview() {
+        // 拖曳進行中不拆預覽層：換手時（例如上一張原圖剛載入完成）
+        // 拆掉會讓主圖區閃一下，放手時自然會收。
+        if (state.dragging) return;
+        clearDragPreview();
+        if (!dragHidShowing) return;
+        dragHidShowing = false;
+        const hidden = dragHidEl;
+        dragHidEl = null;
+        // 只還原「我們自己藏起來的那個 img」；HFS 換掉 DOM 後的新 img 不要亂動
+        if (hidden) {
+            try { hidden.style.removeProperty('opacity'); } catch (e) { }
+        }
+    }
+
     function armProgressivePreview(img) {
         if (!PREVIEW.enabled) return;
         if (!img || !img.thumbUrl || !img.url) return;
@@ -1303,6 +1447,9 @@
                 }
                 if (previewImgEl === boundPreviewImg) previewImgEl = null;
                 finishProgress();
+                rememberLoadedFull(fullImageKey(img));
+                // 真正的大圖已經顯示，拖曳預覽層可以收了
+                dropDragPreview();
             } else {
                 try {
                     boundShowing.style.setProperty('opacity', '0', 'important');
@@ -1725,6 +1872,9 @@
         if (index === state.currentIndex) return;
         if (Date.now() - state.mountedAt < BUILTIN.coldStartMs) return;
 
+        // 拖曳預覽層若還在，且這次導航不是拖曳本身要的目標，先收掉
+        if (dragPreviewEl && dragPreviewIndex !== index) dropDragPreview();
+
         resetZoom();
         deactivateCanvas(false);
 
@@ -2039,6 +2189,7 @@
         if (!track) return;
         track.innerHTML = '';
         state.thumbEls.clear();
+        state.activeClassIndex = -1;
         const size = getEffectiveThumbSize();
         const thumbH = size.h;
         const thumbW = Math.round(thumbH * 1.33);
@@ -2064,6 +2215,8 @@
             rightPad.style.width = `${(total - 1 - state.winEnd) * itemW}px`;
             track.appendChild(rightPad);
         }
+        const hi = state.dragPreviewIndex >= 0 ? state.dragPreviewIndex : state.currentIndex;
+        if (hi >= 0) applyActiveClasses(hi);
     }
 
     function extendWindow(targetIndex) {
@@ -2213,6 +2366,11 @@
         cell.className = 'ib-thumb';
         cell.dataset.index = idx;
         cell.title = img.name;
+        // 增量更新狀態：新建立的格子自己帶上正確的 active / near，
+        // 之後 updateActive 只要改有變動的格子即可。
+        const hi = state.dragPreviewIndex >= 0 ? state.dragPreviewIndex : state.currentIndex;
+        if (idx === hi) cell.classList.add('ib-active');
+        else if (Math.abs(idx - hi) <= 2) cell.classList.add('ib-near');
         const frame = document.createElement('div');
         frame.className = 'ib-thumb-frame';
         const im = document.createElement('img');
@@ -2264,8 +2422,35 @@
     let updatingActive = false;
     let pendingIndex = null;
 
+    // 只更新「有變動」的格子：舊版每次都對全部（可達 300 個）格子做
+    // classList.toggle，拖曳時每個切換都造成整條 strip 的樣式重算。
+    function applyActiveClasses(index) {
+        if (index < 0) return;
+        const prev = state.activeClassIndex;
+        if (prev === index) return;
+        state.activeClassIndex = index;
+
+        if (prev >= 0) {
+            for (let i = prev - 2; i <= prev + 2; i++) {
+                if (i === prev || i === index) continue;
+                const el = state.thumbEls.get(i);
+                if (el) el.classList.remove('ib-near');
+            }
+            const prevEl = state.thumbEls.get(prev);
+            if (prevEl) prevEl.classList.remove('ib-active');
+        }
+        for (let i = index - 2; i <= index + 2; i++) {
+            const el = state.thumbEls.get(i);
+            if (!el) continue;
+            if (i === index) el.classList.add('ib-active');
+            else el.classList.add('ib-near');
+        }
+    }
+
     function centerOnIndex(index, animated = true) {
         if (!state.trackEl || !state.stripEl) return;
+        // 拖曳中位置由手指決定，任何置中寫入都會和 touchmove 打架（回彈、不跟手）
+        if (state.dragging) return;
         const size = getEffectiveThumbSize();
         const thumbH = size.h;
         const thumbW = Math.round(thumbH * 1.33);
@@ -2275,6 +2460,7 @@
         const center = containerW / 2;
         const targetCenter = index * itemW + thumbW / 2;
         const translateX = center - targetCenter;
+        state.trackX = translateX;
         if (!animated) {
             state.trackEl.style.transition = 'none';
             state.trackEl.style.transform = `translateY(-50%) translateX(${translateX}px)`;
@@ -2293,16 +2479,12 @@
         updatingActive = true;
         try {
             state.currentIndex = index;
+            state.dragPreviewIndex = -1;
             extendWindow(index);
-            state.thumbEls.forEach((cell, cellIdx) => {
-                const active = cellIdx === index;
-                const near = Math.abs(cellIdx - index) <= 2 && !active;
-                cell.classList.toggle('ib-active', active);
-                cell.classList.toggle('ib-near', near);
-            });
+            applyActiveClasses(index);
             const prevIdx = state.lastRenderIndex;
             const bigJump = prevIdx >= 0 && Math.abs(index - prevIdx) > 15;
-            if (bigJump && state.trackEl) {
+            if (bigJump && state.trackEl && !state.dragging) {
                 state.trackEl.style.opacity = '0.7';
                 setTimeout(() => {
                     if (state.trackEl) state.trackEl.style.opacity = '1';
@@ -2326,22 +2508,73 @@
         }
     }
 
-    function findThumbIndexAtPoint(clientX) {
-        if (!state.stripEl) return -1;
-        const rect = state.stripEl.getBoundingClientRect();
-        const centerX = rect.left + rect.width / 2;
-        let bestIdx = -1;
-        let bestDist = Infinity;
-        state.thumbEls.forEach((cell, idx) => {
-            const r = cell.getBoundingClientRect();
-            const cx = r.left + r.width / 2;
-            const d = Math.abs(cx - centerX);
-            if (d < bestDist) {
-                bestDist = d;
-                bestIdx = idx;
+    // ============================================================
+    // 縮圖條拖曳（觸控）
+    //
+    // 舊架構在每個 touchmove 裡做三件重活：
+    //   1. 讀 strip + 最多 300 個縮圖的 getBoundingClientRect()，
+    //      而且是在寫完 transform 之後讀 → 每次移動都強制同步重排；
+    //   2. 每 60ms 呼叫 navigateTo()，等於 pushState + popstate +
+    //      HFS 重繪 + 主圖換圖 + 檔案資訊 HEAD 請求；
+    //   3. centerOnIndex() 用「置中動畫」覆寫手指剛寫入的 transform，
+    //      下一次 move 又從起點重算 → 條子來回彈、跟不上手指。
+    // 這三件事相乘就是 iPad 上「不跟手」的來源。
+    //
+    // 新架構：touchmove 只記座標，一個 rAF 寫一次 transform；
+    // 命中索引純算術（零 layout 讀取）；拖曳期間只換高亮不導航，
+    // 放手（touchend）才提交一次 navigateTo()。
+    // ============================================================
+    function readTrackTranslateX() {
+        const el = state.trackEl;
+        if (!el) return state.trackX || 0;
+        try {
+            const tr = getComputedStyle(el).transform;
+            if (tr && tr !== 'none') {
+                const m = tr.match(/matrix\(([^)]+)\)/);
+                if (m) {
+                    const parts = m[1].split(',');
+                    if (parts.length >= 6) {
+                        const v = parseFloat(parts[4]);
+                        if (!isNaN(v)) return v;
+                    }
+                }
             }
-        });
-        return bestIdx;
+        } catch (e) { }
+        return state.trackX || 0;
+    }
+
+    function getDragMetrics() {
+        const size = getEffectiveThumbSize();
+        const thumbW = Math.round(size.h * 1.33);
+        const stripW = state.stripEl ? state.stripEl.clientWidth : window.innerWidth;
+        return { thumbW, itemW: thumbW + size.gap, center: stripW / 2 };
+    }
+
+    function clampTrackX(x, m) {
+        const total = state.images.length;
+        if (total <= 0) return x;
+        const maxX = m.center - m.thumbW / 2;
+        const minX = m.center - ((total - 1) * m.itemW + m.thumbW / 2);
+        return Math.max(minX, Math.min(maxX, x));
+    }
+
+    function setStripDragging(on) {
+        state.dragging = on;
+        if (state.stripEl) state.stripEl.classList.toggle('ib-dragging', on);
+        if (state.trackEl) state.trackEl.style.transition = on ? 'none' : '';
+    }
+
+    // 放手但不換圖（同索引 / 手勢取消 / 冷啟動）：回當前索引並重新置中
+    function restoreAfterDrag() {
+        const idx = state.currentIndex;
+        state.dragPreviewIndex = -1;
+        dropDragPreview();
+        if (idx < 0) return;
+        applyActiveClasses(idx);
+        if (state.counterEl) {
+            state.counterEl.textContent = `${idx + 1} / ${state.images.length}`;
+        }
+        centerOnIndex(idx, true);
     }
 
     function onWheel(e) {
@@ -2404,74 +2637,168 @@
     }
 
     function bindTouchEvents(strip) {
-        let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
-        let isDragging = false;
-        let dragStartTranslateX = 0;
-        let currentTranslateX = 0;
-        let lastSwitchTime = 0;
-        function getCurrentTranslateX() {
-            if (!state.trackEl) return 0;
-            const t = state.trackEl.style.transform || '';
-            const m = t.match(/translateX\(([-\d.]+)px\)/);
-            return m ? parseFloat(m[1]) : 0;
+        let armed = false;
+        let dragging = false;
+        let startX = 0, startY = 0;
+        let baseTrackX = 0;        // 按下瞬間的 track 位移（視覺位置）
+        let baseCenterIndex = 0;   // 按下瞬間「條子中心」對應的（小數）索引
+        let latestDx = 0;
+        let metrics = null;
+        let frame = 0;
+        let previewIndex = -1;
+        let lastSwitchAt = 0;
+
+        function clearFrame() {
+            if (frame) { cancelAnimationFrame(frame); frame = 0; }
         }
+
+        function indexAtDx(dx) {
+            if (!metrics) return state.currentIndex;
+            const raw = Math.round(baseCenterIndex - dx / metrics.itemW);
+            return Math.max(0, Math.min(state.images.length - 1, raw));
+        }
+
+        function applyDragFrame() {
+            frame = 0;
+            if (!dragging || !state.trackEl || !metrics) return;
+            const x = clampTrackX(baseTrackX + latestDx, metrics);
+            state.trackX = x;
+            state.trackEl.style.transform = `translateY(-50%) translateX(${x}px)`;
+
+            const idx = indexAtDx(latestDx);
+            const now = Date.now();
+            // 拖曳期間：換高亮 + 換主圖區預覽 + 補格子 + 更新計數，但不導航
+            if (idx !== previewIndex && now - lastSwitchAt >= DRAG_CFG.switchIntervalMs) {
+                previewIndex = idx;
+                lastSwitchAt = now;
+                state.dragPreviewIndex = idx;
+                applyActiveClasses(idx);
+                extendWindow(idx);
+                showDragPreview(idx);
+                if (state.counterEl) {
+                    state.counterEl.textContent = `${idx + 1} / ${state.images.length}`;
+                }
+            }
+        }
+
+        // 保險索：strip 若在拖曳中被 HFS 換掉，touchend 不會回到 strip 上，
+        // 全域（冒泡階段）補一次收尾，避免 state.dragging 卡住。
+        function onGlobalTouchEnd() {
+            releaseGuard();
+            if (state.dragging) cancelDrag();
+        }
+
+        function releaseGuard() {
+            window.removeEventListener('touchend', onGlobalTouchEnd, true);
+            window.removeEventListener('touchcancel', onGlobalTouchEnd, true);
+            window.removeEventListener('touchend', onGlobalTouchEnd);
+            window.removeEventListener('touchcancel', onGlobalTouchEnd);
+        }
+
+        function cancelDrag() {
+            clearFrame();
+            releaseGuard();
+            const wasDragging = dragging;
+            dragging = false;
+            armed = false;
+            metrics = null;
+            setStripDragging(false);
+            if (wasDragging) restoreAfterDrag();
+        }
+
         function onTouchStart(e) {
             if (state.collapsed) return;
             if (e.touches.length !== 1) return;
+            if (Date.now() - state.mountedAt < BUILTIN.coldStartMs) return;
             const t = e.touches[0];
-            touchStartX = t.clientX;
-            touchStartY = t.clientY;
-            touchStartTime = Date.now();
-            isDragging = false;
-            dragStartTranslateX = getCurrentTranslateX();
-            currentTranslateX = dragStartTranslateX;
-            lastSwitchTime = 0;
-            if (state.trackEl) state.trackEl.style.transition = 'none';
+            armed = true;
+            dragging = false;
+            startX = t.clientX;
+            startY = t.clientY;
+            latestDx = 0;
+            previewIndex = -1;
+            lastSwitchAt = 0;
+            metrics = getDragMetrics();
+            baseTrackX = readTrackTranslateX();
+            baseCenterIndex = (metrics.center - baseTrackX - metrics.thumbW / 2) / metrics.itemW;
+            state.dragPreviewIndex = -1;
+            state.trackX = baseTrackX;
+            if (state.trackEl) {
+                // 凍結在目前「視覺」位置：置中動畫途中抓住也不會跳一下
+                state.trackEl.style.transition = 'none';
+                state.trackEl.style.transform = `translateY(-50%) translateX(${baseTrackX}px)`;
+            }
         }
+
         function onTouchMove(e) {
-            if (state.collapsed) return;
-            if (e.touches.length !== 1) return;
-            const t = e.touches[0];
-            const dx = t.clientX - touchStartX;
-            const dy = t.clientY - touchStartY;
-            if (!isDragging) {
-                if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 8) isDragging = true;
-                else if (Math.abs(dy) > 10) return;
-                else return;
-            }
-            e.preventDefault();
-            currentTranslateX = dragStartTranslateX + dx;
-            state.trackEl.style.transform =
-                `translateY(-50%) translateX(${currentTranslateX}px)`;
-            const now = Date.now();
-            if ((now - lastSwitchTime) >= DRAG_SWITCH_MIN_INTERVAL_MS) {
-                const idx = findThumbIndexAtPoint(t.clientX);
-                if (idx >= 0 && idx !== state.currentIndex) {
-                    navigateTo(idx);
-                    lastSwitchTime = now;
+            if (!armed) return;
+            if (!dragging) {
+                if (e.touches.length !== 1) {
+                    armed = false;
+                    if (state.trackEl) state.trackEl.style.transition = '';
+                    return;
+                }
+                const t0 = e.touches[0];
+                const dx0 = t0.clientX - startX;
+                const dy0 = t0.clientY - startY;
+                if (Math.abs(dx0) > Math.abs(dy0) && Math.abs(dx0) > DRAG_CFG.slopPx) {
+                    dragging = true;
+                    setStripDragging(true);
+                    // 冒泡階段的全域收尾（strip 上的 handler 先跑，正常情況會先移除它）
+                    window.addEventListener('touchend', onGlobalTouchEnd);
+                    window.addEventListener('touchcancel', onGlobalTouchEnd);
+                } else if (Math.abs(dy0) > 10) {
+                    // 垂直手勢：放棄拖曳，交還瀏覽器
+                    armed = false;
+                    if (state.trackEl) state.trackEl.style.transition = '';
+                    return;
+                } else {
+                    return;
                 }
             }
+            if (e.touches.length !== 1) { cancelDrag(); return; }
+            latestDx = e.touches[0].clientX - startX;
+            // 必須在事件處理器內同步 preventDefault（不能等 rAF），
+            // 否則 iOS 仍會補一個 click，拖完又跳一次圖。
+            if (e.cancelable) e.preventDefault();
+            if (!frame) frame = requestAnimationFrame(applyDragFrame);
         }
+
         function onTouchEnd() {
-            if (!isDragging) return;
-            isDragging = false;
-            updateActive(state.currentIndex, true);
-            const img = state.images[state.currentIndex];
-            if (img && isHugeImage(img)) {
-                if (!(hugeState.el && hugeState.targetIndex === state.currentIndex)) {
-                    startHugeCountdown(state.currentIndex);
-                    interceptShowingWithThumb(img);   // === PATCH 3 ===
-                }
+            if (!armed) return;
+            armed = false;
+            clearFrame();
+            releaseGuard();
+            if (!dragging) {
+                // 只是點一下：回到當前索引並把過場還原，之後交給縮圖的 click 處理
+                metrics = null;
+                restoreAfterDrag();
+                return;
+            }
+            dragging = false;
+            const target = indexAtDx(latestDx);
+            metrics = null;
+            setStripDragging(false);
+            state.dragPreviewIndex = -1;
+            if (target >= 0 && target !== state.currentIndex &&
+                Date.now() - state.mountedAt >= BUILTIN.coldStartMs) {
+                // 讓放手瞬間的預覽就是最終目標（最後一次節流可能還沒切到）
+                if (target !== dragPreviewIndex) showDragPreview(target);
+                // 整個拖曳只提交一次真正的導航
+                navigateTo(target);
+                // 保險：若導航最終沒完成，別讓預覽層一直蓋著主圖
+                const guardEl = dragPreviewEl;
+                setTimeout(() => {
+                    if (dragPreviewEl && dragPreviewEl === guardEl) dropDragPreview();
+                }, 5000);
             } else {
-                openGate(state.currentIndex);
-                scheduleLoad(state.currentIndex);
-                if (img) interceptShowingWithThumb(img);   // === PATCH 3 ===
+                restoreAfterDrag();
             }
         }
         strip.addEventListener('touchstart', onTouchStart, { passive: true });
         strip.addEventListener('touchmove', onTouchMove, { passive: false });
         strip.addEventListener('touchend', onTouchEnd, { passive: true });
-        strip.addEventListener('touchcancel', onTouchEnd, { passive: true });
+        strip.addEventListener('touchcancel', cancelDrag, { passive: true });
     }
 
     function bindShowingContainerClick() {
@@ -2765,6 +3092,8 @@
         resetZoom();
         removeCanvasLayer();
         unbindZoomDrag();
+        state.dragging = false;
+        dropDragPreview();
         window.removeEventListener('pointermove', onZoomPointerMove);
         window.removeEventListener('pointerup', onZoomPointerUp);
         zoomState.scale = 1;
@@ -2801,6 +3130,10 @@
         state.lastKnownName = '';
         state.mountedAt = 0;
         state.metaCache.clear();
+        state.dragging = false;
+        state.dragPreviewIndex = -1;
+        state.activeClassIndex = -1;
+        state.trackX = 0;
         mounted = false;
         // === PATCH 6：SPA 切换目录时允许重新拦截 ===
         bootInterceptDone = false;
@@ -2819,6 +3152,9 @@
         if (!mounted || !state.stripEl) return;
         const viewer = document.querySelector('.file-show');
         if (!viewer) return;
+        state.dragging = false;
+        state.dragPreviewIndex = -1;
+        dropDragPreview();
         clearProgressivePreview();
         abortProgress();
         removeCanvasLayer();
@@ -2972,6 +3308,8 @@
         interceptNativeFirstShowing();
         // === PATCH 7 END ===
         const mo = new MutationObserver(() => {
+            // 拖曳期間只會切換縮圖高亮 class；不必每次變動都掃全頁 + 判斷 mount
+            if (state.dragging) return;
             // === PATCH 7：每次 DOM 变动都尝试，直到 done ===
             interceptNativeFirstShowing();
             // === PATCH 7 END ===
