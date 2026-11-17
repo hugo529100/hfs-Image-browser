@@ -330,6 +330,10 @@
         const img = state.images[index];
         if (!img) return;
 
+        // 拖曳中不要起倒計時：等放手後再依最終選取的圖重新起算，
+        // 否則倒計時會在拖曳途中跑完，並用「拖曳前」的索引去下載舊圖。
+        if (state.dragging) return;
+
         clearHugeOverlay();
 
         // 邪修闸门：摘掉 img.showing 的原图 src，关闸，阻止 HFS 原生加载
@@ -1607,6 +1611,10 @@
     function doLoadMainImage(index, force) {
         const img = state.images[index];
         if (!img) return;
+        // 拖曳中一律不載入：放手後會依最終選取的那張重新排程／重新倒計時
+        if (state.dragging) return;
+        // 只允許載入「目前選取」的那張，避免殘留的排程把舊圖載進來
+        if (index !== state.currentIndex) return;
         const showing = document.querySelector('.file-show img.showing');
         if (!showing) return;
 
@@ -2577,6 +2585,46 @@
         centerOnIndex(idx, true);
     }
 
+    // ============================================================
+    // 拖曳期間暫停「延遲載入 / 巨型圖倒計時」
+    //
+    // 舊行為：開始拖曳前那次點選若已起動巨型圖倒計時，倒計時會在拖曳途中
+    // 繼續跑，時間到就用「拖曳前的索引」去下載那張舊圖（還在拖就下載）。
+    // 新行為：一判定為拖曳就暫停，放手時才依最終選取的圖重新起算倒計時。
+    // ============================================================
+    function suspendLoadsForDrag() {
+        const suspended = { index: -1, huge: false };
+        if (hugeState.el && hugeState.targetIndex >= 0) {
+            suspended.index = hugeState.targetIndex;
+            suspended.huge = true;
+        } else if (state.settleTimer && state.pendingLoadIndex >= 0) {
+            suspended.index = state.pendingLoadIndex;
+        }
+        if (state.settleTimer) {
+            clearTimeout(state.settleTimer);
+            state.settleTimer = null;
+        }
+        state.pendingLoadIndex = -1;
+        if (hugeState.el || hugeState.timer) clearHugeOverlay();
+        abortProgress();
+        return suspended;
+    }
+
+    function rearmSuspendedLoad(suspended) {
+        if (!suspended || suspended.index < 0) return;
+        if (suspended.index !== state.currentIndex) return;
+        const img = state.images[suspended.index];
+        if (!img) return;
+        if (isHugeImage(img)) {
+            if (!(hugeState.el && hugeState.targetIndex === suspended.index)) {
+                startHugeCountdown(suspended.index);
+            }
+            return;
+        }
+        openGate(suspended.index);
+        scheduleLoad(suspended.index);
+    }
+
     function onWheel(e) {
         if (state.collapsed) return;
         if (zoomState.scale > 1) return;
@@ -2647,6 +2695,7 @@
         let frame = 0;
         let previewIndex = -1;
         let lastSwitchAt = 0;
+        let suspendedLoad = null;  // 拖曳前被暫停的延遲載入／倒計時
 
         function clearFrame() {
             if (frame) { cancelAnimationFrame(frame); frame = 0; }
@@ -2703,7 +2752,11 @@
             armed = false;
             metrics = null;
             setStripDragging(false);
-            if (wasDragging) restoreAfterDrag();
+            if (wasDragging) {
+                restoreAfterDrag();
+                rearmSuspendedLoad(suspendedLoad);
+            }
+            suspendedLoad = null;
         }
 
         function onTouchStart(e) {
@@ -2713,6 +2766,7 @@
             const t = e.touches[0];
             armed = true;
             dragging = false;
+            suspendedLoad = null;
             startX = t.clientX;
             startY = t.clientY;
             latestDx = 0;
@@ -2743,6 +2797,9 @@
                 const dy0 = t0.clientY - startY;
                 if (Math.abs(dx0) > Math.abs(dy0) && Math.abs(dx0) > DRAG_CFG.slopPx) {
                     dragging = true;
+                    // 先暫停上一張的延遲載入／巨型圖倒計時，
+                    // 拖曳期間絕不載入，放手後再依最終選取重新起算。
+                    suspendedLoad = suspendLoadsForDrag();
                     setStripDragging(true);
                     // 冒泡階段的全域收尾（strip 上的 handler 先跑，正常情況會先移除它）
                     window.addEventListener('touchend', onGlobalTouchEnd);
@@ -2773,6 +2830,7 @@
                 // 只是點一下：回到當前索引並把過場還原，之後交給縮圖的 click 處理
                 metrics = null;
                 restoreAfterDrag();
+                suspendedLoad = null;
                 return;
             }
             dragging = false;
@@ -2784,15 +2842,20 @@
                 Date.now() - state.mountedAt >= BUILTIN.coldStartMs) {
                 // 讓放手瞬間的預覽就是最終目標（最後一次節流可能還沒切到）
                 if (target !== dragPreviewIndex) showDragPreview(target);
-                // 整個拖曳只提交一次真正的導航
+                // 整個拖曳只提交一次真正的導航（倒計時／載入由 navigateTo 重新起算）
+                const pendingSuspended = suspendedLoad;
+                suspendedLoad = null;
                 navigateTo(target);
-                // 保險：若導航最終沒完成，別讓預覽層一直蓋著主圖
+                // 保險：若導航最終沒完成，別讓預覽層一直蓋著主圖，也把原本那張的載入還原
                 const guardEl = dragPreviewEl;
                 setTimeout(() => {
                     if (dragPreviewEl && dragPreviewEl === guardEl) dropDragPreview();
+                    if (state.currentIndex !== target) rearmSuspendedLoad(pendingSuspended);
                 }, 5000);
             } else {
                 restoreAfterDrag();
+                rearmSuspendedLoad(suspendedLoad);
+                suspendedLoad = null;
             }
         }
         strip.addEventListener('touchstart', onTouchStart, { passive: true });
@@ -2898,6 +2961,9 @@
 
     async function mount() {
         if (mountInProgress) return;
+        // 拖曳中不要重建 / 卸載縮圖條（會把正在拖的節點換掉）；
+        // 放手時 class 變動會再觸發 observer → schedule → mount
+        if (state.dragging) return;
         const viewer = document.querySelector('.file-show');
         if (!viewer) return;
         const showing = viewer.querySelector('img.showing');
