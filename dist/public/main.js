@@ -138,12 +138,26 @@
         };
     }
 
+    // ============================================================
+    // 幾何快照：縮圖尺寸只算一次，CSS 變數與所有幾何計算共用同一份。
+    // 舊版每個函式各自呼叫 getEffectiveThumbSize()：一旦視窗尺寸在
+    // 「寫 CSS 變數」與「算 pad / 置中」之間改變（旋轉螢幕、工具列伸縮、
+    // HFS 重繪後重新 mount），DOM 用舊尺寸、計算用新尺寸 → 選中格偏掉。
+    // ============================================================
+    const metricsState = { thumbH: 0, thumbW: 0, gap: 0, itemW: 0, key: '' };
+
     function injectCssVars() {
         const size = getEffectiveThumbSize();
         const thumbH = size.h;
         const thumbW = Math.round(thumbH * 1.33);
         const gap = size.gap;
         const itemW = thumbW + gap;
+
+        metricsState.thumbH = thumbH;
+        metricsState.thumbW = thumbW;
+        metricsState.gap = gap;
+        metricsState.itemW = itemW;
+        metricsState.key = `${thumbH}x${gap}`;
 
         const root = document.documentElement;
         root.style.setProperty('--ib-thumb-h', thumbH + 'px');
@@ -155,6 +169,13 @@
         root.style.setProperty('--ib-fade-in', BUILTIN.mainImageFadeInMs + 'ms');
         root.style.setProperty('--ib-track-fade', BUILTIN.trackFadeMs + 'ms');
         root.style.setProperty('--ib-tab-size', BUILTIN.collapseTabSize + 'px');
+        return metricsState;
+    }
+
+    // 幾何計算一律吃這一份；尚未初始化時先補算
+    function requireMetrics() {
+        if (!metricsState.key) injectCssVars();
+        return metricsState;
     }
 
     const IMG_EXTS = [
@@ -271,6 +292,8 @@
         mountedAt: 0,
         metaCache: new Map(),
         resizeReloadTimer: null,
+        orientationTimer: null,
+        resizeDeferred: false,
         settleTimer: null,
         pendingLoadIndex: -1,
 
@@ -2115,6 +2138,9 @@
     }
 
     function buildStrip() {
+        // 建立 strip 前先把尺寸快照 / CSS 變數對齊，
+        // 任何一條重建路徑（mount、旋轉、目錄切換）都不會用到舊方向的尺寸
+        injectCssVars();
         const strip = document.createElement('div');
         strip.className = 'ib-strip-container';
         const track = document.createElement('div');
@@ -2198,11 +2224,10 @@
         track.innerHTML = '';
         state.thumbEls.clear();
         state.activeClassIndex = -1;
-        const size = getEffectiveThumbSize();
-        const thumbH = size.h;
-        const thumbW = Math.round(thumbH * 1.33);
-        const gap = size.gap;
-        const itemW = thumbW + gap;
+        const m = requireMetrics();
+        const thumbH = m.thumbH;
+        const thumbW = m.thumbW;
+        const itemW = m.itemW;
         const total = state.images.length;
         if (state.winStart > 0) {
             const leftPad = document.createElement('div');
@@ -2230,11 +2255,10 @@
     function extendWindow(targetIndex) {
         const total = state.images.length;
         if (total === 0) return;
-        const size = getEffectiveThumbSize();
-        const thumbH = size.h;
-        const thumbW = Math.round(thumbH * 1.33);
-        const gap = size.gap;
-        const itemW = thumbW + gap;
+        const m = requireMetrics();
+        const thumbH = m.thumbH;
+        const thumbW = m.thumbW;
+        const itemW = m.itemW;
         const track = state.trackEl;
         if (!track) return;
         const MARGIN = WINDOW_CFG.MARGIN;
@@ -2327,11 +2351,8 @@
         const total = state.images.length;
         const rendered = state.winEnd - state.winStart + 1;
         if (rendered <= WINDOW_CFG.MAX_RENDERED) return;
-        const size = getEffectiveThumbSize();
-        const thumbH = size.h;
-        const thumbW = Math.round(thumbH * 1.33);
-        const gap = size.gap;
-        const itemW = thumbW + gap;
+        const m = requireMetrics();
+        const itemW = m.itemW;
         const track = state.trackEl;
         if (!track) return;
         const KEEP = WINDOW_CFG.KEEP_RADIUS;
@@ -2459,14 +2480,22 @@
         if (!state.trackEl || !state.stripEl) return;
         // 拖曳中位置由手指決定，任何置中寫入都會和 touchmove 打架（回彈、不跟手）
         if (state.dragging) return;
-        const size = getEffectiveThumbSize();
-        const thumbH = size.h;
-        const thumbW = Math.round(thumbH * 1.33);
-        const gap = size.gap;
-        const itemW = thumbW + gap;
+        const m = requireMetrics();
         const containerW = state.stripEl.clientWidth;
+        if (!containerW) return;
         const center = containerW / 2;
-        const targetCenter = index * itemW + thumbW / 2;
+
+        // 優先量測「實際 DOM 位置」：即使尺寸來源有任何不同步，
+        // 選中格依然會落在條子正中央。（offsetParent 就是 .ib-strip-track）
+        let targetCenter = null;
+        const cell = state.thumbEls.get(index);
+        if (cell && cell.offsetWidth) {
+            targetCenter = cell.offsetLeft + cell.offsetWidth / 2;
+        }
+        if (targetCenter === null) {
+            targetCenter = index * m.itemW + m.thumbW / 2;
+        }
+
         const translateX = center - targetCenter;
         state.trackX = translateX;
         if (!animated) {
@@ -2552,10 +2581,9 @@
     }
 
     function getDragMetrics() {
-        const size = getEffectiveThumbSize();
-        const thumbW = Math.round(size.h * 1.33);
+        const m = requireMetrics();
         const stripW = state.stripEl ? state.stripEl.clientWidth : window.innerWidth;
-        return { thumbW, itemW: thumbW + size.gap, center: stripW / 2 };
+        return { thumbW: m.thumbW, itemW: m.itemW, center: stripW / 2 };
     }
 
     function clampTrackX(x, m) {
@@ -2757,6 +2785,7 @@
                 rearmSuspendedLoad(suspendedLoad);
             }
             suspendedLoad = null;
+            flushDeferredViewportChange();
         }
 
         function onTouchStart(e) {
@@ -2831,6 +2860,7 @@
                 metrics = null;
                 restoreAfterDrag();
                 suspendedLoad = null;
+                flushDeferredViewportChange(80);
                 return;
             }
             dragging = false;
@@ -2857,6 +2887,7 @@
                 rearmSuspendedLoad(suspendedLoad);
                 suspendedLoad = null;
             }
+            flushDeferredViewportChange();
         }
         strip.addEventListener('touchstart', onTouchStart, { passive: true });
         strip.addEventListener('touchmove', onTouchMove, { passive: false });
@@ -3053,9 +3084,7 @@
             contain.appendChild(strip);
             mounted = true;
             state.mountedAt = Date.now();
-            const size = getEffectiveThumbSize();
-            state.lastSizeKey = `${size.h}x${size.gap}`;
-            state.lastAspectKey = getAspectKey();
+            markViewportHandled();
             applyCollapseState();
             updateActive(idx, false);
             bindZoomDrag();
@@ -3069,7 +3098,10 @@
                 document.addEventListener('keydown', onKeyDown, { capture: true });
             }
             window.addEventListener('resize', onResize);
-            window.addEventListener('orientationchange', onResize);
+            window.addEventListener('orientationchange', onOrientationChange);
+            if (window.visualViewport) {
+                window.visualViewport.addEventListener('resize', onResize);
+            }
             setTimeout(() => { detectJumpMode(); }, 500);
             if (state.images[idx]) {
                 const firstImg = state.images[idx];
@@ -3209,9 +3241,21 @@
             clearTimeout(state.resizeReloadTimer);
             state.resizeReloadTimer = null;
         }
+        if (state.orientationTimer) {
+            clearTimeout(state.orientationTimer);
+            state.orientationTimer = null;
+        }
+        if (deferredFlushTimer) {
+            clearTimeout(deferredFlushTimer);
+            deferredFlushTimer = null;
+        }
+        state.resizeDeferred = false;
         document.removeEventListener('keydown', onKeyDown, { capture: true });
         window.removeEventListener('resize', onResize);
-        window.removeEventListener('orientationchange', onResize);
+        window.removeEventListener('orientationchange', onOrientationChange);
+        if (window.visualViewport) {
+            window.visualViewport.removeEventListener('resize', onResize);
+        }
     }
 
     function softReloadBrowser() {
@@ -3223,7 +3267,14 @@
         dropDragPreview();
         clearProgressivePreview();
         abortProgress();
-        removeCanvasLayer();
+        // 巨型圖的 canvas 圖層屬於 .showing-container，
+        // 這裡只是重建縮圖條，不該把它拆掉（否則旋轉後大圖會變黑）。
+        if (canvasState.active) {
+            sizeCanvasToContainer();
+            scheduleCanvasRender();
+        } else {
+            removeCanvasLayer();
+        }
         const keepIndex = state.currentIndex;
         const keepCollapsed = state.collapsed;
         const keepImages = state.images;
@@ -3263,12 +3314,17 @@
         }
         const strip = buildStrip();
         contain.appendChild(strip);
-        const size = getEffectiveThumbSize();
-        state.lastSizeKey = `${size.h}x${size.gap}`;
-        state.lastAspectKey = getAspectKey();
-        state.mountedAt = Date.now();
+        markViewportHandled();
         applyCollapseState();
         updateActive(keepIndex, false);
+        // buildStrip 之後版面才真正套用新尺寸：下一幀再依實測位置校一次，
+        // 這樣旋轉後選中格一定回到正中央（不受 subpixel / 版面時序影響）
+        const settleIndex = keepIndex;
+        requestAnimationFrame(() => {
+            if (!mounted || state.dragging) return;
+            if (state.currentIndex !== settleIndex) return;
+            centerOnIndex(settleIndex, false);
+        });
         zoomDragBound = false;
         bindZoomDrag();
         bindShowingContainerClick();
@@ -3277,41 +3333,122 @@
             main.addEventListener('wheel', onWheel, { passive: false });
             state.mainEl = main;
         }
-        if (state.images[keepIndex]) {
-            armProgressivePreview(state.images[keepIndex]);
+        const curImg = state.images[keepIndex];
+        // 巨型圖用 canvas 顯示時不要疊上縮圖預覽（會蓋住 canvas 且卡在那裡）
+        if (curImg && !canvasState.active) {
+            armProgressivePreview(curImg);
         }
     }
 
-    function getAspectKey() {
-        const w = window.innerWidth;
-        const h = window.innerHeight;
+    // 目前方向的識別：只看「橫/直」與縮圖尺寸，工具列伸縮（innerHeight 小變動）
+    // 不該觸發整條 strip 重建，只要重新置中即可。
+    function getOrientationKey() {
+        const w = window.innerWidth || 0;
+        const h = window.innerHeight || 0;
         if (!w || !h) return '';
-        return (w / h).toFixed(3);
+        return w >= h ? 'L' : 'P';
+    }
+
+    function markViewportHandled() {
+        state.lastSizeKey = requireMetrics().key;
+        state.lastAspectKey = getOrientationKey();
     }
 
     function onResize() {
-        if (!mounted) return;
+        if (!mounted) {
+            // 尚未 mount：只把 CSS 變數對齊目前的視窗，之後 buildStrip 會再算一次
+            injectCssVars();
+            return;
+        }
+        if (state.resizeReloadTimer || state.orientationTimer) return;
+        const m = getEffectiveThumbSize();
+        const sizeKey = `${m.h}x${m.gap}`;
+        const orientationKey = getOrientationKey();
+        const changed =
+            state.lastSizeKey !== sizeKey ||
+            state.lastAspectKey !== orientationKey;
+
+        if (!changed) {
+            // 尺寸沒變（例如手機工具列伸縮）：DOM 與計算仍一致，只需依實測重新置中。
+            if (canvasState.active) {
+                sizeCanvasToContainer();
+                scheduleCanvasRender();
+            }
+            if (state.currentIndex >= 0 && !state.dragging) {
+                centerOnIndex(state.currentIndex, false);
+                const idx = state.currentIndex;
+                requestAnimationFrame(() => {
+                    if (mounted && !state.dragging && state.currentIndex === idx) {
+                        centerOnIndex(idx, false);
+                    }
+                });
+            }
+            return;
+        }
+
+        // 尺寸真的變了：整條 strip 必須重建（重新注入變數、重算 pad、重新置中），
+        // 只改 CSS 變數會讓 pad 的 px 值與實際格寬不一致 → 選中格偏掉。
+        if (state.dragging) {
+            // 拖曳中不能拆 strip，等放手後再處理
+            state.resizeDeferred = true;
+            return;
+        }
         if (canvasState.active) {
             sizeCanvasToContainer();
             scheduleCanvasRender();
         }
-        const size = getEffectiveThumbSize();
-        const sizeKey = `${size.h}x${size.gap}`;
-        const aspectKey = getAspectKey();
-        const changed =
-            state.lastSizeKey !== sizeKey ||
-            state.lastAspectKey !== aspectKey;
-        if (!changed) {
-            if (state.currentIndex >= 0) centerOnIndex(state.currentIndex, false);
-            return;
-        }
-        state.lastSizeKey = sizeKey;
-        state.lastAspectKey = aspectKey;
         if (state.resizeReloadTimer) clearTimeout(state.resizeReloadTimer);
         state.resizeReloadTimer = setTimeout(() => {
             state.resizeReloadTimer = null;
+            if (!mounted) return;
             softReloadBrowser();
-        }, 150);
+        }, 120);
+    }
+
+    // 旋轉螢幕：iOS 的 innerWidth/innerHeight 會晚一拍才更新，
+    // 所以先放掉縮放／預覽狀態，等尺寸穩定後用「新方向」整個重建一次。
+    function onOrientationChange() {
+        if (!mounted) {
+            injectCssVars();
+            return;
+        }
+        if (state.dragging) {
+            state.resizeDeferred = true;
+            return;
+        }
+        resetZoom();
+        dropDragPreview();
+        clearProgressivePreview();
+        if (state.resizeReloadTimer) {
+            clearTimeout(state.resizeReloadTimer);
+            state.resizeReloadTimer = null;
+        }
+        if (state.orientationTimer) clearTimeout(state.orientationTimer);
+        state.orientationTimer = setTimeout(() => {
+            state.orientationTimer = null;
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    if (!mounted) return;
+                    softReloadBrowser();
+                });
+            });
+        }, 80);
+    }
+
+    // 若因為「拖曳中」而延後的重建，拖完立刻補做。
+    // 點擊（tap）時給一點延遲：重建會換掉縮圖節點，
+    // 太早重建會讓 iOS 剛補發的 click 落空（點縮圖沒反應）。
+    let deferredFlushTimer = null;
+
+    function flushDeferredViewportChange(delay) {
+        if (!state.resizeDeferred) return;
+        if (deferredFlushTimer) clearTimeout(deferredFlushTimer);
+        deferredFlushTimer = setTimeout(() => {
+            deferredFlushTimer = null;
+            if (!state.resizeDeferred) return;
+            state.resizeDeferred = false;
+            onResize();
+        }, delay === undefined ? 0 : delay);
     }
 
     let scheduled = false;
