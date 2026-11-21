@@ -409,6 +409,43 @@
 }
 
 /* ============================================================
+   主圖顯隱（由 main.js 的 syncShowingHiddenClass() 切換）
+
+   只要有預覽層（漸進預覽 / 拖曳預覽）在負責顯示，任何 .showing
+   都必須隱藏 —— 包括 HFS 換圖後才新插入的 <img> 節點。
+   否則「上一張已載入的大圖」會疊在預覽圖上／後，
+   兩張長寬比不同時就會看到殘影叠加。
+   ============================================================ */
+.file-show.ib-showing-hidden img.showing,
+.file-show.ib-showing-hidden audio.showing,
+.file-show.ib-showing-hidden video.showing {
+    opacity: 0 !important;
+}
+
+/* ============================================================
+   拖曳中：拖曳預覽層（z-index:4）在顯示時，其他圖層全部讓位
+
+   不然拖到不同長寬比的那張時，下面還活著的圖層
+   （上一張的漸進預覽、canvas 大圖、HFS 的 .cover 底圖）
+   就會從 letterbox 的空隙露出來，看起來像「兩張不同比例的圖疊在一起」。
+   ============================================================ */
+.file-show.ib-drag-owned img.showing,
+.file-show.ib-drag-owned audio.showing,
+.file-show.ib-drag-owned video.showing,
+.file-show.ib-drag-owned .ib-progressive-preview,
+.file-show.ib-drag-owned .ib-canvas-layer,
+.file-show.ib-drag-owned .cover {
+    opacity: 0 !important;
+}
+
+/* 這些圖層本身有 0.3s～1s 的 opacity 過場；拖曳時要「立刻」讓位，
+   否則頭 0.3～1 秒還是會看到它在淡出（等於殘影）。 */
+.file-show.ib-drag-owned .ib-progressive-preview,
+.file-show.ib-drag-owned .cover {
+    transition: none !important;
+}
+
+/* ============================================================
    Progressive preview (LQIP)
    ============================================================ */
 .file-show .showing-container {
@@ -447,11 +484,22 @@
 }
 
 /* 拖曳縮圖條時的即時預覽層（由 main.js 動態建立、重用同一個 img）
-   必須蓋過 showing / canvas，但不能蓋過大圖倒數遮罩（z-index 10） */
+   刻意使用獨立 class（不共用 .ib-progressive-preview），
+   否則會被「隱藏漸進預覽」的規則一起藏掉 → 拖曳時看不到任何預覽。
+   z-index 要高於 showing / canvas，但不能高於大圖倒數遮罩（z-index 10）。
+   background: inherit → 用 .showing-container 的底色填滿 letterbox，
+   等於一塊乾淨的背板，不會透出下面任何圖層。 */
 .file-show .showing-container .ib-drag-preview {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center;
+    pointer-events: none;
+    background: inherit;
     z-index: 4;
     transition: none;
-    pointer-events: none;
 }
 
 /* ============================================================

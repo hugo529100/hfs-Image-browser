@@ -535,14 +535,15 @@
             try { showing.removeEventListener('load', onReady); } catch (e) { }
             try { showing.removeEventListener('error', onReady); } catch (e) { }
             if (mainLoadCleanup && mainLoadCleanup.fn === onReady) mainLoadCleanup = null;
-            try {
-                showing.style.removeProperty('opacity');
-            } catch (e) {
-                showing.style.opacity = '';
-            }
             finishProgress();
             rememberLoadedFull(fullImageKey(img));
+            // 真圖已畫出：先收拖曳預覽層
             dropDragPreview();
+            // 若漸進預覽還綁在同一個 <img> 上（例如它自己已因縮圖 load 而 finalize 過），
+            // 这里要主動交棒，否則它會一直蓋住／藏住剛載入的真圖。
+            if (previewBoundShowing === showing) clearProgressivePreview();
+            // 最後由「唯一出口」決定是否讓主圖現身
+            revealShowingIfIdle();
         };
 
         if (mainLoadCleanup) {
@@ -806,6 +807,8 @@
             finishProgress();
             rememberLoadedFull(normalizeUrl(effUrl));
             dropDragPreview();
+            // canvas 已經接手顯示，漸進預覽層也交棒
+            clearProgressivePreview();
         };
         loader.onerror = () => {
             if (token !== canvasState.loadToken) return;
@@ -837,6 +840,8 @@
         hideNativeShowing(false);
         if (restoreNative) {
             applyZoomTransform(false);
+            // canvas 失敗要退回原生 <img>：確保它沒有被預覽層的隱藏規則卡住
+            revealShowingIfIdle();
         }
     }
 
@@ -1264,6 +1269,7 @@
             previewImgEl = null;
         }
         previewCurrentUrl = '';
+        syncShowingHiddenClass();
     }
 
     function getReadyThumbSrc(img, index) {
@@ -1314,7 +1320,10 @@
         const container = getShowingContainerEl();
         if (!container) return null;
         const el = document.createElement('img');
-        el.className = 'ib-progressive-preview ib-drag-preview';
+        // 刻意「不」共用 .ib-progressive-preview：
+        // 那個 class 會被「隱藏漸進預覽」的規則命中，
+        // 之前的寫法把拖曳層自己也一起藏掉，變成拖曳時完全看不到預覽。
+        el.className = 'ib-drag-preview';
         el.decoding = 'async';
         el.draggable = false;
         el.alt = '';
@@ -1347,6 +1356,7 @@
         if (!el) return;
         hideShowingForDrag();
         dragPreviewIndex = index;
+        syncShowingHiddenClass();
 
         const full = fullImageKey(img);
         const showFull = loadedFullUrls.has(full);
@@ -1378,6 +1388,42 @@
             if (dragPreviewEl.parentNode) dragPreviewEl.remove();
             dragPreviewEl = null;
         }
+        syncShowingHiddenClass();
+    }
+
+    // ============================================================
+    // 主圖顯隱的唯一出口
+    //
+    // 這裡以前散落著好幾處 `showing.style.removeProperty('opacity')`。
+    // 導航途中只要有任何一處提前還原（例如前一張的 onReady/finalize 在
+    // 拖曳或換圖途中才到），就會把「上一張已載入的大圖」重新顯示出來；
+    // 兩張圖長寬比不同時，新預覽圖四周就會疊著舊大圖的殘影。
+    // 現在只有「沒有任何預覽層在負責顯示」時才允許主圖現身。
+    // ============================================================
+    function previewLayerOwnsDisplay() {
+        if (dragPreviewEl) return true;   // 拖曳預覽層（含放手後等真圖的空窗）
+        const showing = getMainImage();
+        return !!(previewBoundShowing && previewBoundShowing === showing);
+    }
+
+    function syncShowingHiddenClass() {
+        const viewer = document.querySelector('.file-show');
+        if (!viewer) return;
+        // 用 class 而不是只對某個 <img> 設 inline opacity：
+        // HFS 換圖時可能會整個換掉 <img> 節點，class 會連新節點一起藏住。
+        viewer.classList.toggle('ib-showing-hidden', previewLayerOwnsDisplay());
+        // 拖曳預覽層在顯示時，連同「上一張的漸進預覽 / canvas / 封面底圖」
+        // 一起讓位，否則不同長寬比時會從 letterbox 空隙露出第二張圖。
+        viewer.classList.toggle('ib-drag-owned', !!dragPreviewEl);
+    }
+
+    function revealShowingIfIdle() {
+        syncShowingHiddenClass();
+        if (previewLayerOwnsDisplay()) return;
+        const showing = getMainImage();
+        if (!showing) return;
+        try { showing.style.removeProperty('opacity'); } catch (e) { }
+        showing.classList.remove('ib-fading');
     }
 
     function dropDragPreview() {
@@ -1385,7 +1431,10 @@
         // 拆掉會讓主圖區閃一下，放手時自然會收。
         if (state.dragging) return;
         clearDragPreview();
-        if (!dragHidShowing) return;
+        if (!dragHidShowing) {
+            revealShowingIfIdle();
+            return;
+        }
         dragHidShowing = false;
         const hidden = dragHidEl;
         dragHidEl = null;
@@ -1393,6 +1442,7 @@
         if (hidden) {
             try { hidden.style.removeProperty('opacity'); } catch (e) { }
         }
+        revealShowingIfIdle();
     }
 
     function armProgressivePreview(img) {
@@ -1437,6 +1487,7 @@
             showing.style.opacity = '0';
         }
         showing.classList.remove('ib-fading');
+        syncShowingHiddenClass();
 
         const boundShowing = showing;
         const boundPreviewImg = pImg;
@@ -1463,31 +1514,28 @@
 
             const ready = isShowingReady();
             if (ready) {
-                try {
-                    boundShowing.style.removeProperty('opacity');
-                } catch (e) {
-                    boundShowing.style.opacity = '';
+                // 先解除預覽層的綁定，主圖才准現身（否則會被判成「預覽仍負責顯示」）
+                if (previewImgEl === boundPreviewImg) previewImgEl = null;
+                if (previewBoundShowing === boundShowing) {
+                    previewBoundShowing = null;
+                    previewLoadHandler = null;
+                    previewErrorHandler = null;
+                    previewCurrentUrl = '';
                 }
-                boundShowing.classList.remove('ib-fading');
                 if (boundPreviewImg && boundPreviewImg.parentNode) {
                     boundPreviewImg.remove();
                 }
-                if (previewImgEl === boundPreviewImg) previewImgEl = null;
                 finishProgress();
                 rememberLoadedFull(fullImageKey(img));
                 // 真正的大圖已經顯示，拖曳預覽層可以收了
                 dropDragPreview();
+                revealShowingIfIdle();
             } else {
+                // 還沒就緒：預覽層繼續負責顯示，主圖保持隱藏
                 try {
                     boundShowing.style.setProperty('opacity', '0', 'important');
                 } catch (e) { boundShowing.style.opacity = '0'; }
-            }
-
-            if (previewBoundShowing === boundShowing) {
-                previewBoundShowing = null;
-                previewLoadHandler = null;
-                previewErrorHandler = null;
-                previewCurrentUrl = '';
+                syncShowingHiddenClass();
             }
 
             if (ready) updateFileInfoResFromShowing(boundShowing);
@@ -2944,9 +2992,13 @@
         const thumb = getReadyThumbSrc(img, state.currentIndex);
         if (thumb) {
             showing.src = thumb;
-            try { showing.style.removeProperty('opacity'); } catch (e) { }
+            // 有預覽層在負責顯示時不要還原 opacity：主圖會蓋在預覽層上，
+            // 而它的新 src 解碼完成前，瀏覽器仍會畫著「上一張大圖」，
+            // 長寬比不同時就會看到殘影叠加。
+            revealShowingIfIdle();
         } else {
             showing.src = BLANK_PIXEL;
+            syncShowingHiddenClass();
         }
         // === PATCH FIX GATE：閘門狀態由呼叫方控制（startHugeCountdown / openGate /
         // interceptNativeFirstShowing），此處不再 closeGate(-1)，
@@ -3162,11 +3214,18 @@
             showing.style.touchAction = '';
             showing.classList.remove('ib-fading');
         }
+        // 卸載時把「主圖隱藏」的 class 一起清掉，否則整個 file-show 會是全黑
+        const fileShow = document.querySelector('.file-show');
+        if (fileShow) {
+            fileShow.classList.remove('ib-showing-hidden');
+            fileShow.classList.remove('ib-drag-owned');
+        }
         removeCanvasLayer();
         const container = document.querySelector('.file-show .showing-container');
         if (container) {
             container.style.touchAction = '';
             container.querySelectorAll('.ib-progressive-preview').forEach(el => el.remove());
+            container.querySelectorAll('.ib-drag-preview').forEach(el => el.remove());
             container.querySelectorAll('.ib-huge-overlay').forEach(el => el.remove());
             container.querySelectorAll('.ib-canvas-layer').forEach(el => el.remove());
             if (state.showingContainerEl === container) {
@@ -3474,6 +3533,9 @@
                         pendingUnmount = null;
                     }
                     if (mounted) healThumbnails();
+                    // 自我修復：HFS 若重建了 file-show（class 會掉），
+                    // 或換了新的 <img>，這裡把「預覽層負責顯示 → 主圖要藏」的狀態補回去
+                    syncShowingHiddenClass();
                     if (!isObjectUrl && !isBlankPixel) {
                         const newName = decodeURIComponent(src.split('/').pop().split('?')[0]);
                         if (newName !== state.lastKnownName) {
