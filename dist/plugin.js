@@ -1,6 +1,6 @@
 exports.version = 6.8;
 exports.apiRequired = 10.0;
-exports.repo = "Hug3O/Image-browser";
+exports.repo = "hugo529100/hfs-Image-browser";
 exports.description = "High-efficiency Picasa-style image browser with thumbnail strip, progressive preview, and smart deferred loading.";
 exports.depend = [{ "repo": "rejetto/thumbnails", "version": 4 }]
 exports.frontend_js = ['main.js', 'fileshow-help-image.js'];
