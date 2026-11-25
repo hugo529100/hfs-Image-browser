@@ -47,6 +47,11 @@
 
     const COLLAPSE_KEY = 'ib.collapsed';
 
+    // 右上角「Countdown-load」按鈕的狀態（記在 localStorage，刷新後保持）
+    const COUNTDOWN_KEY = 'ib.countdownLoad';
+    // 預設開啟：沿用原本的倒計時加載機制
+    let countdownLoad = true;
+
     const BLANK_PIXEL =
         'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
@@ -70,6 +75,29 @@
         try {
             localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0');
         } catch (e) { }
+    }
+
+    function loadCountdownPref() {
+        try {
+            const v = localStorage.getItem(COUNTDOWN_KEY);
+            // 沒有記錄 → 預設「開啟倒計時加載」
+            countdownLoad = v === null ? true : v === '1';
+        } catch (e) {
+            countdownLoad = true;
+        }
+        return countdownLoad;
+    }
+
+    function saveCountdownPref(on) {
+        try {
+            localStorage.setItem(COUNTDOWN_KEY, on ? '1' : '0');
+        } catch (e) { }
+    }
+
+    // 是否允許「自動／倒計時載入原圖」。關閉時：不倒計時、不預載，
+    // 只顯示縮圖作為臨時主圖，點一下主圖區才載入高清圖。
+    function countdownLoadEnabled() {
+        return countdownLoad;
     }
 
     let C = {
@@ -349,13 +377,26 @@
         // 不清 gateClosed / gateIndex / parkedSrc：由 openGate/closeGate 显式控制
     }
 
-    function startHugeCountdown(index) {
+    function startHugeCountdown(index, forceAuto) {
         const img = state.images[index];
         if (!img) return;
 
         // 拖曳中不要起倒計時：等放手後再依最終選取的圖重新起算，
         // 否則倒計時會在拖曳途中跑完，並用「拖曳前」的索引去下載舊圖。
         if (state.dragging) return;
+
+        // Countdown-load 關閉：不倒計時、不預載，只留縮圖等使用者點擊。
+        // forceAuto = 使用者主動要求（放大手勢/放大按鈕），照樣走倒計時。
+        if (!countdownLoadEnabled() && !forceAuto) {
+            if (state.settleTimer) {
+                clearTimeout(state.settleTimer);
+                state.settleTimer = null;
+            }
+            clearHugeOverlay();
+            state.pendingLoadIndex = index;
+            if (!isImageAlreadyLoaded(img)) armProgressivePreview(img);
+            return;
+        }
 
         clearHugeOverlay();
 
@@ -587,6 +628,8 @@
         pinchStartTranslateY: 0,
         pinchStartCenterX: 0,
         pinchStartCenterY: 0,
+        // 這次手勢是否已經因放大而要求過高清圖（每次手勢只要求一次）
+        hdRequested: false,
     };
 
     const canvasState = {
@@ -887,6 +930,15 @@
         img.style.userSelect = 'none';
         img.style.touchAction = zoomState.scale > 1 ? 'none' : '';
 
+        // 主圖還只是縮圖（漸進預覽層在顯示）時，預覽層也要套用同樣的
+        // transform，否則縮放時畫面完全不動，等原圖載完才突然跳過去。
+        if (previewImgEl) {
+            previewImgEl.style.transition = animated ? 'transform 0.2s ease-out' : 'none';
+            previewImgEl.style.transformOrigin = 'center center';
+            previewImgEl.style.transform =
+                `translate(${zoomState.translateX}px, ${zoomState.translateY}px) scale(${zoomState.scale})`;
+        }
+
         updateZoomLabel();
     }
 
@@ -913,6 +965,31 @@
         zoomState.translateY = Math.max(-maxY, Math.min(maxY, zoomState.translateY));
     }
 
+    // ============================================================
+    // 主動要求高清圖（放大手勢 / 放大按鈕 / 鍵盤 +）
+    //
+    // 使用者放大＝想看細節，把縮圖放大沒有意義。
+    // 不論 Countdown-load 開或關，都走「一般機制」：
+    //   巨型圖 → 立刻開始倒計時（點遮罩可立即載入）
+    //   其他圖 → 照 settle 排程載入
+    // 已經載入 / 已排程 / 已在倒計時 → 不重複觸發。
+    // ============================================================
+    function requestOriginalForZoom() {
+        const idx = state.currentIndex;
+        if (idx < 0 || idx >= state.images.length) return;
+        const img = state.images[idx];
+        if (!img) return;
+        if (isImageAlreadyLoaded(img)) return;
+        if (hugeState.el && hugeState.targetIndex === idx) return;
+        if (state.settleTimer && state.pendingLoadIndex === idx) return;
+        armProgressivePreview(img);
+        if (isHugeImage(img)) {
+            startHugeCountdown(idx, true);
+        } else {
+            scheduleLoad(idx, true);
+        }
+    }
+
     function zoomImage(direction, factor) {
         const oldScale = zoomState.scale;
         let newScale;
@@ -923,6 +1000,9 @@
         }
         newScale = Math.max(ZOOM_CFG.MIN, Math.min(ZOOM_CFG.MAX, newScale));
         if (newScale === oldScale) return;
+
+        // 往「放大」方向：主動把原圖載進來（縮圖放大沒有意義）
+        if (newScale > oldScale) requestOriginalForZoom();
 
         const ratio = newScale / oldScale;
         zoomState.translateX *= ratio;
@@ -939,6 +1019,7 @@
     }
 
     function resetZoom() {
+        zoomState.hdRequested = false;
         if (zoomState.scale === 1 &&
             zoomState.translateX === 0 &&
             zoomState.translateY === 0) return;
@@ -1021,6 +1102,8 @@
             zoomState.pinchStartScale = zoomState.scale;
             zoomState.pinchStartTranslateX = zoomState.translateX;
             zoomState.pinchStartTranslateY = zoomState.translateY;
+            // 新手勢：允許再要求一次高清圖（僅放大時觸發）
+            zoomState.hdRequested = false;
 
             const cx = (t1.clientX + t2.clientX) / 2;
             const cy = (t1.clientY + t2.clientY) / 2;
@@ -1073,6 +1156,11 @@
                     clampZoomTranslation();
                 }
                 applyZoomTransform(false);
+                // 手指往「放大」方向：這次手勢要求一次高清圖
+                if (newScale > zoomState.pinchStartScale + 0.01 && !zoomState.hdRequested) {
+                    zoomState.hdRequested = true;
+                    requestOriginalForZoom();
+                }
             }
             setContainerTouchAction('none');
             e.preventDefault();
@@ -1094,6 +1182,7 @@
         }
         if (e.touches.length === 0) {
             zoomState.dragging = false;
+            zoomState.hdRequested = false;
         }
         if (zoomState.scale <= 1) {
             zoomState.scale = 1;
@@ -1366,7 +1455,8 @@
         if (el.getAttribute('src') !== src) el.src = src;
 
         if (dragPreviewTimer) { clearTimeout(dragPreviewTimer); dragPreviewTimer = 0; }
-        if (!showFull && !isHugeImage(img) && !shouldUseCanvas(img)) {
+        // Countdown-load 關閉時連拖曳中的「停頓升級」也不做（不預載原圖）
+        if (!showFull && countdownLoadEnabled() && !isHugeImage(img) && !shouldUseCanvas(img)) {
             const want = getEffectiveImageUrl(img);
             dragPreviewTimer = setTimeout(() => {
                 dragPreviewTimer = 0;
@@ -1646,13 +1736,22 @@
         return base;
     }
 
-    function scheduleLoad(index) {
+    function scheduleLoad(index, forceAuto) {
         if (state.settleTimer) {
             clearTimeout(state.settleTimer);
             state.settleTimer = null;
         }
         state.pendingLoadIndex = index;
         const img = state.images[index];
+
+        // Countdown-load 關閉：不排程、不預載原圖。
+        // 只維持縮圖（漸進預覽）當臨時主圖，點主圖區才載入高清圖。
+        // forceAuto = 使用者主動要求（放大手勢/放大按鈕），不受此限。
+        if (!countdownLoadEnabled() && !forceAuto) {
+            if (img && !isImageAlreadyLoaded(img)) armProgressivePreview(img);
+            return;
+        }
+
         const delay = getSettleDelayFor(img);
         state.settleTimer = setTimeout(() => {
             state.settleTimer = null;
@@ -1661,11 +1760,28 @@
             const target = state.images[state.pendingLoadIndex];
             if (target && isHugeImage(target) &&
                 !(hugeState.el && hugeState.targetIndex === state.pendingLoadIndex)) {
-                startHugeCountdown(state.pendingLoadIndex);
+                startHugeCountdown(state.pendingLoadIndex, forceAuto);
                 return;
             }
             doLoadMainImage(state.pendingLoadIndex);
         }, delay);
+    }
+
+    // 手動載入：點一下臨時主圖（或同一張縮圖）就把目前這張的原圖載進來。
+    // 跳過倒計時與尺寸判斷（force=true）。
+    function loadCurrentImageNow() {
+        const idx = state.currentIndex;
+        if (idx < 0 || idx >= state.images.length) return;
+        const img = state.images[idx];
+        if (!img) return;
+        if (state.settleTimer) {
+            clearTimeout(state.settleTimer);
+            state.settleTimer = null;
+        }
+        state.pendingLoadIndex = -1;
+        clearHugeOverlay();
+        openGate(idx);
+        doLoadMainImage(idx, true);
     }
 
     function forceLoadNow(index) {
@@ -2173,6 +2289,125 @@
         applyCollapseState();
     }
 
+    // ============================================================
+    // 右上角「Countdown-load」開關（Auto-play 左邊）
+    //   開（預設）：巨型圖倒數後自動載入原圖
+    //   關：不倒計時、也不預載原圖，只留縮圖當臨時主圖，
+    //       點一下主圖區（或再點同一張縮圖）才載入高清圖
+    // 狀態存在 localStorage，刷新頁面後保持。
+    // ============================================================
+    const COUNTDOWN_BTN_ID = 'ib-countdown-btn';
+
+    // 找出 Auto-play 按鈕「外面那層 div」，新按鈕要插在它前面。
+    // 注意：HFS 的標籤會被翻譯（zh-TW 是「自動播放」），所以要同時比對中英，
+    // 最後再退回「本列唯一的 <button class="small">」這個結構特徵。
+    function findAutoPlayAnchor(controls) {
+        const buttons = controls.querySelectorAll('button');
+        for (let i = 0; i < buttons.length; i++) {
+            const b = buttons[i];
+            const text = (b.getAttribute('title') || '') + ' ' +
+                (b.getAttribute('aria-label') || '') + ' ' +
+                (b.textContent || '');
+            if (/auto-?play|自動播放|自动播放|autoplay/i.test(text)) {
+                return b.parentElement || b;
+            }
+        }
+        const small = controls.querySelector('button.small');
+        if (small) {
+            const wrap = small.parentElement;
+            return (wrap && wrap !== controls) ? wrap : small;
+        }
+        return null;
+    }
+
+    function syncCountdownButton() {
+        const btn = document.getElementById(COUNTDOWN_BTN_ID);
+        if (!btn) return;
+        const on = countdownLoadEnabled();
+        btn.classList.toggle('toggled', on);
+        btn.classList.toggle('ib-countdown-off', !on);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        btn.title = 'Countdown-load';
+    }
+
+    function ensureCountdownButton() {
+        if (!document.querySelector('.file-show')) return;
+        const existing = document.getElementById(COUNTDOWN_BTN_ID);
+        if (existing && existing.isConnected) {
+            syncCountdownButton();
+            return existing;
+        }
+        const bar = document.querySelector('.file-show .bar');
+        if (!bar) return null;
+        const controls = bar.querySelector('.controls') || bar;
+        if (!controls) return null;
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.id = COUNTDOWN_BTN_ID;
+        btn.className = 'icon-button ib-countdown-btn';
+        btn.title = 'Countdown-load';
+        btn.setAttribute('aria-label', 'Countdown-load');
+        // 圖標：Ⓒ（與檔案資訊列同一組圈字）。
+        // 放在一層 span 裡用 flex 置中，讓它在按鈕內跟 help 的 "?" 一樣正中；
+        // 直接塞 textContent 會受 line-height／baseline 影響而偏上或偏左。
+        const glyph = document.createElement('span');
+        glyph.className = 'ib-countdown-glyph';
+        glyph.textContent = '\u24B8';
+        btn.appendChild(glyph);
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setCountdownLoad(!countdownLoadEnabled());
+        });
+
+        // 插在 Auto-play 左邊：Auto-play 外面包了一層 <div>，要插到那個 div 之前
+        const anchor = findAutoPlayAnchor(controls);
+        if (anchor && anchor.parentNode) {
+            anchor.parentNode.insertBefore(btn, anchor);
+        } else {
+            controls.appendChild(btn);
+        }
+        syncCountdownButton();
+        return btn;
+    }
+
+    function setCountdownLoad(on) {
+        countdownLoad = !!on;
+        saveCountdownPref(countdownLoad);
+        syncCountdownButton();
+        if (!mounted) return;
+
+        if (!countdownLoad) {
+            // 關閉：取消進行中的倒計時／排程，回到「只顯示縮圖」
+            if (state.settleTimer) {
+                clearTimeout(state.settleTimer);
+                state.settleTimer = null;
+            }
+            clearHugeOverlay();
+            state.pendingLoadIndex = state.currentIndex;
+            const img = state.images[state.currentIndex];
+            if (img && !isImageAlreadyLoaded(img)) armProgressivePreview(img);
+            syncShowingHiddenClass();
+        } else {
+            // 開啟：目前這張若還沒載入原圖，立刻恢復「倒計時 → 載入」。
+            // 巨型圖要「馬上」彈出倒計時（不再等 settle 延遲），
+            // 倒計時跑完才下載原圖；普通圖直接載入。
+            const idx = state.currentIndex;
+            const img = state.images[idx];
+            if (img && !isImageAlreadyLoaded(img)) {
+                if (isHugeImage(img)) {
+                    if (!(hugeState.el && hugeState.targetIndex === idx)) {
+                        armProgressivePreview(img);
+                        startHugeCountdown(idx, true);
+                    }
+                } else {
+                    loadCurrentImageNow();
+                }
+            }
+        }
+    }
+
     function applyCollapseState() {
         const strip = state.stripEl;
         if (!strip) return;
@@ -2485,10 +2720,18 @@
             cell.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                if (idx === state.currentIndex && state.settleTimer &&
-                    state.pendingLoadIndex === idx) {
-                    forceLoadNow(idx);
-                    return;
+                // 目前這張還沒載入原圖：
+                //   一般模式 → 有排程就提前載入
+                //   Countdown-load 關閉 → 點同一張縮圖就直接載入高清圖
+                if (idx === state.currentIndex && state.pendingLoadIndex === idx) {
+                    if (state.settleTimer) {
+                        forceLoadNow(idx);
+                        return;
+                    }
+                    if (!countdownLoadEnabled()) {
+                        loadCurrentImageNow();
+                        return;
+                    }
                 }
                 navigateTo(idx);
             });
@@ -2967,6 +3210,12 @@
             return;
         }
 
+        // Countdown-load 關閉（手動模式）：點臨時預覽圖就載入高清圖
+        if (!countdownLoadEnabled()) {
+            loadCurrentImageNow();
+            return;
+        }
+
         if (!state.settleTimer) return;
         if (state.pendingLoadIndex < 0) return;
         forceLoadNow(state.pendingLoadIndex);
@@ -3047,6 +3296,8 @@
         // 拖曳中不要重建 / 卸載縮圖條（會把正在拖的節點換掉）；
         // 放手時 class 變動會再觸發 observer → schedule → mount
         if (state.dragging) return;
+        // 工具列可能在 HFS 重繪後才出現 / 被換掉，先把按鈕補上
+        ensureCountdownButton();
         const viewer = document.querySelector('.file-show');
         if (!viewer) return;
         const showing = viewer.querySelector('img.showing');
@@ -3261,6 +3512,9 @@
         unbindWheelFromMain();
         cleanupMainImageInlineStyles();
         document.querySelectorAll('.ib-strip-container').forEach(el => el.remove());
+        // 離開圖片檢視時把工具列的 Ⓒ 按鈕也收掉（換成影片／音檔就不該出現）
+        const countdownBtn = document.getElementById(COUNTDOWN_BTN_ID);
+        if (countdownBtn) countdownBtn.remove();
         if (state.settleTimer) {
             clearTimeout(state.settleTimer);
             state.settleTimer = null;
@@ -3533,6 +3787,8 @@
                         pendingUnmount = null;
                     }
                     if (mounted) healThumbnails();
+                    // 右上角 Countdown-load 按鈕：HFS 重繪工具列後會消失，這裡補回
+                    ensureCountdownButton();
                     // 自我修復：HFS 若重建了 file-show（class 會掉），
                     // 或換了新的 <img>，這裡把「預覽層負責顯示 → 主圖要藏」的狀態補回去
                     syncShowingHiddenClass();
@@ -3640,12 +3896,18 @@
         closeGate, openGate,
         interceptShowingWithThumb,
         interceptNativeFirstShowing,
+        // Countdown-load 開關（右上角 Ⓒ 按鈕）：也可從 console 直接呼叫
+        setCountdownLoad, countdownLoadEnabled, loadCountdownPref,
+        ensureCountdownButton,
+        loadCurrentImageNow,
+        requestOriginalForZoom,
         resetDetect: () => { state.nextButtonSide = 'right'; state.jumpMode = null; },
         refresh: () => { state.listFetchedFor = ''; schedule(); },
     };
 
     function boot() {
         loadConfig();
+        loadCountdownPref();
         injectCssVars();
         // === PATCH 8：boot 同步段先尝试拦截一次 ===
         interceptNativeFirstShowing();

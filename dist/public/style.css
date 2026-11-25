@@ -446,6 +446,33 @@
 }
 
 /* ============================================================
+   右上角 Countdown-load 開關（插在 Auto-play 左邊）
+   開：button.toggled（HFS 原生的白色光暈）＝倒計時加載原圖
+   關：淡化＝不倒計時、不預載，點主圖區才載入高清圖
+   ============================================================ */
+.file-show .bar .ib-countdown-btn {
+    margin-right: 4px;
+}
+
+/* 讓 Ⓒ 跟 help 的 "?" 一樣在按鈕正中央：
+   span 撐滿按鈕內容區、自己再用 flex 置中，
+   不受文字 line-height / baseline 影響。 */
+.file-show .bar .ib-countdown-btn .ib-countdown-glyph {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    line-height: 1;
+    font-size: 1em;
+    pointer-events: none;
+}
+
+.file-show .bar .ib-countdown-btn.ib-countdown-off {
+    opacity: 0.45;
+}
+
+/* ============================================================
    Progressive preview (LQIP)
    ============================================================ */
 .file-show .showing-container {
