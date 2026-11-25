@@ -446,15 +446,17 @@
 }
 
 /* ============================================================
-   右上角 Countdown-load 開關（插在 Auto-play 左邊）
-   開：button.toggled（HFS 原生的白色光暈）＝倒計時加載原圖
-   關：淡化＝不倒計時、不預載，點主圖區才載入高清圖
+   右上角 Countdown-load 模式切換鈕（插在 Auto-play 左邊）
+   Ⓒ → 倒計時加載原圖模式（button.toggled，HFS 原生的按下樣式）
+   Ⓣ → 停用倒計時、只顯示縮圖模式（普通原生樣式）
+   兩種模式都只用 HFS 原生外觀；圖標本身就是模式指示，
+   不做半透明／暗調處理。
    ============================================================ */
 .file-show .bar .ib-countdown-btn {
     margin-right: 4px;
 }
 
-/* 讓 Ⓒ 跟 help 的 "?" 一樣在按鈕正中央：
+/* 讓 Ⓒ / Ⓣ 跟 help 的 "?" 一樣在按鈕正中央：
    span 撐滿按鈕內容區、自己再用 flex 置中，
    不受文字 line-height / baseline 影響。 */
 .file-show .bar .ib-countdown-btn .ib-countdown-glyph {
@@ -466,10 +468,6 @@
     line-height: 1;
     font-size: 1em;
     pointer-events: none;
-}
-
-.file-show .bar .ib-countdown-btn.ib-countdown-off {
-    opacity: 0.45;
 }
 
 /* ============================================================

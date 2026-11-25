@@ -1,4 +1,4 @@
-exports.version = 7.3;
+exports.version = 7.7;
 exports.apiRequired = 10.0;
 exports.repo = "hugo529100/hfs-Image-browser";
 exports.description = "High-efficiency Picasa-style image browser with thumbnail strip, progressive preview, and smart deferred loading.";
@@ -6,6 +6,10 @@ exports.depend = [{ "repo": "rejetto/thumbnails", "version": 4 }]
 exports.frontend_js = ['main.js', 'fileshow-help-image.js'];
 exports.frontend_css = ['style.css'];
 exports.changelog = [
+    { version: 7.7, message: "Config wording: dropped the Chinese word from the thumbnail settings' helper texts. They now simply read 'Recommended: pixels 600~800' and 'Recommended: quality 80~95', and the note under them says 'Recommended: pixels 600~800, quality 80~95'." },
+    { version: 7.6, message: "Thumbnail preview settings in the panel: three new fields at the top of the Large Images tab (above the temporary-preview note) - pixels (default 800, recommended 600~800), quality (default 95, recommended 80~95) and regenerateBefore. They are the thumbnails plugin's settings, whose ?get=thumb images the browser reuses as temporary previews. On page load an admin session merges them into the thumbnails plugin through the official get_plugin / set_plugin API - only when they differ, and without touching its other keys - so they can be tuned here. After changing pixels or quality, bump regenerateBefore (or clear the thumbnail cache) so existing thumbnails are rebuilt." },
+    { version: 7.5, message: "Countdown-load button styling: removed the custom semi-transparent 'off' look. Both modes now use HFS's native button appearance only - the countdown mode (\u24B8) uses the native toggled/pressed style, the thumbnail mode (\u24C9) is a plain native button - and the glyph alone tells you which mode is active." },
+    { version: 7.4, message: "Countdown-load is now a two-state mode switch whose icon shows the active mode: circled-C = countdown mode (large images count down, then the original loads), circled-T = thumbnail mode (countdown disabled, nothing preloaded). The default is now thumbnail mode and the choice is stored under ib.loadMode; the old ib.countdownLoad key is no longer read, so every browser starts in thumbnail mode once and then remembers what you pick. The help page documents both glyphs, the new default and how to get the high-resolution image in thumbnail mode." },
     { version: 7.3, message: "Turning Countdown-load back on now starts the countdown for the current image immediately (it used to wait for the settle delay first). With the toggle off, navigating to a large image still shows only the thumbnail; pressing the button then pops the countdown right away, and the original loads when it finishes. Non-huge images are loaded directly when the toggle is turned back on." },
     { version: 7.2, message: "Zoom now pulls in the high-resolution image: pressing the toolbar + / keyboard + or pinching in triggers the normal loading flow for the current image even while Countdown-load is off (huge images show the countdown first, other images load after the settle delay). The progressive-preview layer receives the same zoom transform, so zooming a thumbnail gives immediate feedback instead of nothing until the full image arrives. Already-loaded, already-scheduled or already-counting-down images are not re-triggered, and a pinch requests it only once per gesture." },
     { version: 7.1, message: "Countdown-load glyph centering: the circled-C is now wrapped in its own flex-centred <span> (and the redundant font-size / line-height overrides are gone), so it sits exactly in the middle of the toolbar button like the help button's '?'. The stray leading variation selector (U+FE0E) was dropped, so the icon is a single character and cannot be nudged sideways by an invisible advance." },
@@ -45,6 +49,45 @@ exports.config = {
     // ============================================
     // === 1. Large Images ===
     // ============================================
+    // ── 縮圖品質（這三項會套用到 rejetto/thumbnails 外掛）──────────
+    // Image-browser 的暫時預覽圖就是 thumbnails 的 ?get=thumb，
+    // 所以在這裡直接調最方便。以管理員身分載入檔案頁面時，
+    // 前端會用官方 get_plugin / set_plugin API 把這裡的值合併寫進
+    // thumbnails 外掛（不會動到其他欄位）。
+    pixels: {
+        showIf: x => x.config_tab === 'large',
+        type: 'number', defaultValue: 800, min: 10, max: 2000,
+        unit: 'pixels',
+        label: "pixels - thumbnail size (preview source)",
+        helperText: "Longest side of the thumbnails that the browser reuses as " +
+                    "temporary previews. Recommended: pixels 600~800 - " +
+                    "sharp enough for the preview, still fast to generate. " +
+                    "Values above ~1000 slow down the first generation and grow " +
+                    "the cache.",
+        frontend: true
+    },
+
+    quality: {
+        showIf: x => x.config_tab === 'large',
+        type: 'number', defaultValue: 95, min: 1, max: 100,
+        label: "quality - thumbnail JPEG quality",
+        helperText: "JPEG quality of the generated thumbnails. " +
+                    "Recommended: quality 80~95 - 100 is best quality but " +
+                    "bigger files and slower generation.",
+        frontend: true
+    },
+
+    regenerateBefore: {
+        showIf: x => x.config_tab === 'large',
+        type: 'date_time', defaultValue: '2026-11-12T00:34:25.652Z',
+        label: "regenerateBefore - thumbnail cache invalidation",
+        helperText: "Thumbnails older than this are regenerated on the next " +
+                    "request. After changing pixels or quality, set it to now " +
+                    "(or clear the thumbnail cache in the thumbnails plugin) so " +
+                    "existing thumbnails are rebuilt.",
+        frontend: true
+    },
+
     largeImagesHint: {
         showIf: x => x.config_tab === 'large',
         type: 'select',
@@ -53,11 +96,13 @@ exports.config = {
             { value: 'ok', label: 'About temporary preview quality...' }
         ],
         label: "Temporary preview quality",
-         helperText: "For a sharper temporary preview, in the 'thumbnails' plugin " +
-                    "raise 'pixels' to 600 or above, turn 'EXIF' OFF, then clear " +
-                    "the thumbnail cache and let thumbnails regenerate. The image " +
-                    "browser reuses those ?get=thumb images as its progressive " +
-                    "preview, so this directly improves temporary preview clarity.",
+         helperText: "The three values above are applied to the 'thumbnails' plugin " +
+                    "(the browser reuses its ?get=thumb images as progressive " +
+                    "previews). Recommended: pixels 600~800, quality 80~95. " +
+                    "Turning EXIF OFF in the thumbnails plugin also helps clarity. " +
+                    "After changing them, refresh 'regenerateBefore' so old " +
+                    "thumbnails are rebuilt. Changes take effect after reloading " +
+                    "the file browser page.",
         frontend: true
     },
 
@@ -166,6 +211,10 @@ exports.configDialog = {
 };
 
 exports.changelog = [
+    { version: 7.7, message: "Config wording: dropped the Chinese word from the thumbnail settings' helper texts. They now simply read 'Recommended: pixels 600~800' and 'Recommended: quality 80~95', and the note under them says 'Recommended: pixels 600~800, quality 80~95'." },
+    { version: 7.6, message: "Thumbnail preview settings in the panel: three new fields at the top of the Large Images tab (above the temporary-preview note) - pixels (default 800, recommended 600~800), quality (default 95, recommended 80~95) and regenerateBefore. They are the thumbnails plugin's settings, whose ?get=thumb images the browser reuses as temporary previews. On page load an admin session merges them into the thumbnails plugin through the official get_plugin / set_plugin API - only when they differ, and without touching its other keys - so they can be tuned here. After changing pixels or quality, bump regenerateBefore (or clear the thumbnail cache) so existing thumbnails are rebuilt." },
+    { version: 7.5, message: "Countdown-load button styling: removed the custom semi-transparent 'off' look. Both modes now use HFS's native button appearance only - the countdown mode (\u24B8) uses the native toggled/pressed style, the thumbnail mode (\u24C9) is a plain native button - and the glyph alone tells you which mode is active." },
+    { version: 7.4, message: "Countdown-load is now a two-state mode switch whose icon shows the active mode: circled-C = countdown mode (large images count down, then the original loads), circled-T = thumbnail mode (countdown disabled, nothing preloaded). The default is now thumbnail mode and the choice is stored under ib.loadMode; the old ib.countdownLoad key is no longer read, so every browser starts in thumbnail mode once and then remembers what you pick. The help page documents both glyphs, the new default and how to get the high-resolution image in thumbnail mode." },
     { version: 7.3, message: "Turning Countdown-load back on now starts the countdown for the current image immediately (it used to wait for the settle delay first). With the toggle off, navigating to a large image still shows only the thumbnail; pressing the button then pops the countdown right away, and the original loads when it finishes. Non-huge images are loaded directly when the toggle is turned back on." },
     { version: 7.2, message: "Zoom now pulls in the high-resolution image: pressing the toolbar + / keyboard + or pinching in triggers the normal loading flow for the current image even while Countdown-load is off (huge images show the countdown first, other images load after the settle delay). The progressive-preview layer receives the same zoom transform, so zooming a thumbnail gives immediate feedback instead of nothing until the full image arrives. Already-loaded, already-scheduled or already-counting-down images are not re-triggered, and a pinch requests it only once per gesture." },
     { version: 7.1, message: "Countdown-load glyph centering: the circled-C is now wrapped in its own flex-centred <span> (and the redundant font-size / line-height overrides are gone), so it sits exactly in the middle of the toolbar button like the help button's '?'. The stray leading variation selector (U+FE0E) was dropped, so the icon is a single character and cannot be nudged sideways by an invisible advance." },

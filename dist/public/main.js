@@ -47,10 +47,12 @@
 
     const COLLAPSE_KEY = 'ib.collapsed';
 
-    // 右上角「Countdown-load」按鈕的狀態（記在 localStorage，刷新後保持）
-    const COUNTDOWN_KEY = 'ib.countdownLoad';
-    // 預設開啟：沿用原本的倒計時加載機制
-    let countdownLoad = true;
+    // 右上角「Countdown-load」模式切換鈕（記在 localStorage，刷新後保持）
+    //   'countdown' → Ⓒ 倒計時加載原圖模式
+    //   'thumb'     → Ⓣ 停用倒計時、只顯示縮圖模式
+    // 預設：Ⓣ（縮圖模式）
+    const LOAD_MODE_KEY = 'ib.loadMode';
+    let countdownLoad = false;
 
     const BLANK_PIXEL =
         'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
@@ -79,25 +81,74 @@
 
     function loadCountdownPref() {
         try {
-            const v = localStorage.getItem(COUNTDOWN_KEY);
-            // 沒有記錄 → 預設「開啟倒計時加載」
-            countdownLoad = v === null ? true : v === '1';
+            const v = localStorage.getItem(LOAD_MODE_KEY);
+            // 沒有記錄 → 預設「Ⓣ 縮圖模式」（不倒計時、不預載）
+            countdownLoad = v === 'countdown';
         } catch (e) {
-            countdownLoad = true;
+            countdownLoad = false;
         }
         return countdownLoad;
     }
 
     function saveCountdownPref(on) {
         try {
-            localStorage.setItem(COUNTDOWN_KEY, on ? '1' : '0');
+            localStorage.setItem(LOAD_MODE_KEY, on ? 'countdown' : 'thumb');
         } catch (e) { }
     }
 
-    // 是否允許「自動／倒計時載入原圖」。關閉時：不倒計時、不預載，
-    // 只顯示縮圖作為臨時主圖，點一下主圖區才載入高清圖。
+    // 是否允許「自動／倒計時載入原圖」。
+    // 關閉（預設 Ⓣ）：不倒計時、不預載，只顯示縮圖；
+    //   點主圖區、放大或切回 Ⓒ 才載入高清圖。
     function countdownLoadEnabled() {
         return countdownLoad;
+    }
+
+    // ============================================================
+    // 把面板上的 pixels / quality / regenerateBefore 套用到 thumbnails 外掛
+    //
+    // Image-browser 的暫時預覽圖就是 thumbnails 的 ?get=thumb。
+    // HFS 沒有「A 外掛寫 B 外掛設定」的伺服器 API，但管理員身分可以用
+    // 後台同款的 get_plugin / set_plugin：先讀回完整設定再合併，
+    // 只改這三個 key（不會動到 exif / thresholds 等其他欄位），
+    // 而且只有「與目前 thumbnails 設定不同」時才寫入。
+    // 非管理員／未登入：完全不呼叫 API，只在面板顯示。
+    // ============================================================
+    let thumbSyncDone = false;
+
+    function syncThumbnailSettings() {
+        if (thumbSyncDone) return;
+        const H = window.HFS || {};
+        if (typeof H.apiCall !== 'function') return;
+        const sess = H.session || {};
+        if (!sess.isAdmin) return;
+        const pixels = Math.round(Number(C.pixels));
+        const quality = Math.round(Number(C.quality));
+        if (!pixels || !quality) return;
+        const regenerateBefore = C.regenerateBefore || '';
+
+        thumbSyncDone = true;
+        const fail = (e) => {
+            thumbSyncDone = false;
+            try {
+                console.warn('[Image-browser] thumbnails settings not applied:',
+                    e && (e.message || e));
+            } catch (err) { }
+        };
+
+        Promise.resolve()
+            .then(() => H.apiCall('get_plugin', { id: 'thumbnails' }))
+            .then(res => {
+                const conf = (res && res.config) || {};
+                const next = Object.assign({}, conf, {
+                    pixels: pixels,
+                    quality: quality,
+                });
+                if (regenerateBefore) next.regenerateBefore = regenerateBefore;
+                // 完全相同就不寫，避免每次載入都動 thumbnails 的設定
+                if (JSON.stringify(next) === JSON.stringify(conf)) return null;
+                return H.apiCall('set_plugin', { id: 'thumbnails', config: next });
+            })
+            .catch(fail);
     }
 
     let C = {
@@ -108,6 +159,10 @@
         hugeImageThresholdMb: 8,
         hugeCountdownSeconds: 3,
         canvasThresholdMb: 50,
+        // 面板上的縮圖設定（載入時會同步到 thumbnails 外掛）
+        pixels: 800,
+        quality: 95,
+        regenerateBefore: '',
     };
 
     function loadConfig() {
@@ -2324,10 +2379,17 @@
         const btn = document.getElementById(COUNTDOWN_BTN_ID);
         if (!btn) return;
         const on = countdownLoadEnabled();
+        // 只用 HFS 原生外觀：Ⓒ 用 button.toggled（按下樣式），
+        // Ⓣ 就是普通按鈕；不再加半透明／暗調。
         btn.classList.toggle('toggled', on);
-        btn.classList.toggle('ib-countdown-off', !on);
         btn.setAttribute('aria-pressed', on ? 'true' : 'false');
         btn.title = 'Countdown-load';
+        // 圖標就是模式：Ⓒ＝倒計時加載原圖、Ⓣ＝停用倒計時（縮圖模式）
+        const glyph = btn.querySelector('.ib-countdown-glyph');
+        if (glyph) {
+            const want = on ? '\u24B8' : '\u24C9';
+            if (glyph.textContent !== want) glyph.textContent = want;
+        }
     }
 
     function ensureCountdownButton() {
@@ -2348,12 +2410,12 @@
         btn.className = 'icon-button ib-countdown-btn';
         btn.title = 'Countdown-load';
         btn.setAttribute('aria-label', 'Countdown-load');
-        // 圖標：Ⓒ（與檔案資訊列同一組圈字）。
+        // 圖標就是模式：Ⓒ＝倒計時加載原圖、Ⓣ＝停用倒計時（縮圖模式）。
         // 放在一層 span 裡用 flex 置中，讓它在按鈕內跟 help 的 "?" 一樣正中；
         // 直接塞 textContent 會受 line-height／baseline 影響而偏上或偏左。
         const glyph = document.createElement('span');
         glyph.className = 'ib-countdown-glyph';
-        glyph.textContent = '\u24B8';
+        glyph.textContent = countdownLoadEnabled() ? '\u24B8' : '\u24C9';
         btn.appendChild(glyph);
         btn.addEventListener('click', (e) => {
             e.preventDefault();
@@ -3901,6 +3963,8 @@
         ensureCountdownButton,
         loadCurrentImageNow,
         requestOriginalForZoom,
+        // 把面板上的縮圖設定（pixels / quality / regenerateBefore）套到 thumbnails 外掛
+        syncThumbnailSettings,
         resetDetect: () => { state.nextButtonSide = 'right'; state.jumpMode = null; },
         refresh: () => { state.listFetchedFor = ''; schedule(); },
     };
@@ -3908,6 +3972,7 @@
     function boot() {
         loadConfig();
         loadCountdownPref();
+        syncThumbnailSettings();
         injectCssVars();
         // === PATCH 8：boot 同步段先尝试拦截一次 ===
         interceptNativeFirstShowing();
