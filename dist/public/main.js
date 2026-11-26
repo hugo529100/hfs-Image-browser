@@ -362,6 +362,9 @@
         lastWheelTime: 0,
         listFetchedFor: '',
         listFetching: false,
+        // 抓清單時 HFS.state.list 的長度；用來偵測刪除／新增後清單過期
+        hfsListCount: -1,
+        lastListRefreshAt: 0,
         nextButtonSide: 'right',
         detecting: false,
         lastKnownName: '',
@@ -1571,6 +1574,32 @@
         showing.classList.remove('ib-fading');
     }
 
+    // ============================================================
+    // HFS 自己換圖時的「預覽層交棒」
+    //
+    // 刪除圖片後 HFS 會直接換掉 <img class="showing"> 的 src（跳下一張），
+    // 這時舊的漸進預覽還綁在同一個 <img> 上、主圖又被 opacity:0 藏著，
+    // 而 finalize 的目標 URL 還是「被刪掉那張」→ 永遠不會 ready，
+    // 於是主界面一直停在舊圖（或它的縮圖）。
+    // 這裡把舊預覽清掉，改綁新圖的縮圖；新圖已就緒就直接顯示。
+    // ============================================================
+    function resyncPreviewForDomChange(index) {
+        const showing = getMainImage();
+        if (!showing) return;
+        const img = index >= 0 ? state.images[index] : null;
+        const wantUrl = img ? normalizeUrl(img.url) : '';
+        // 綁在舊節點、或綁的目標不是現在這張 → 清掉（含殘留在舊 DOM 的預覽）
+        if (previewBoundShowing &&
+            (previewBoundShowing !== showing || previewCurrentUrl !== wantUrl)) {
+            clearProgressivePreview();
+        }
+        if (img && !isImageAlreadyLoaded(img)) {
+            armProgressivePreview(img, index);
+        } else {
+            revealShowingIfIdle();
+        }
+    }
+
     function dropDragPreview() {
         // 拖曳進行中不拆預覽層：換手時（例如上一張原圖剛載入完成）
         // 拆掉會讓主圖區閃一下，放手時自然會收。
@@ -1590,7 +1619,7 @@
         revealShowingIfIdle();
     }
 
-    function armProgressivePreview(img) {
+    function armProgressivePreview(img, index) {
         if (!PREVIEW.enabled) return;
         if (!img || !img.thumbUrl || !img.url) return;
         const showing = getMainImage();
@@ -1608,7 +1637,10 @@
             }
         } catch (e) { }
 
-        const thumbSrc = getReadyThumbSrc(img, state.currentIndex);
+        // index 由呼叫方指定（HFS 自己換圖時 state.currentIndex 可能還沒更新，
+        // 用錯索引會取到上一張的縮圖 → 看起來像主界面沒切換）
+        const thumbIdx = (index !== undefined && index >= 0) ? index : state.currentIndex;
+        const thumbSrc = getReadyThumbSrc(img, thumbIdx);
 
         const pImg = document.createElement('img');
         pImg.className = 'ib-progressive-preview';
@@ -2017,10 +2049,62 @@
             }
             state.images = orderedImages;
             state.listFetchedFor = folderUri;
+            state.hfsListCount = hfsList.length;
         } catch (e) {
         } finally {
             state.listFetching = false;
         }
+    }
+
+    // ============================================================
+    // 清單過期偵測 + 重新對位
+    //
+    // 刪除（或新增）檔案後 HFS 會 reloadList 並直接換成下一張圖；
+    // 我們的 state.images 是快取的，索引会跟 HFS 不一致（條子上還留著
+    // 已刪除的縮圖）。這裡比對 HFS 清單長度，一變動就重抓並以
+    // 「目前顯示的檔名」重新定位，重建條子。
+    // ============================================================
+    function checkListChanged() {
+        if (!mounted || state.dragging) return;
+        if (state.hfsListCount < 0) return;
+        const list = (window.HFS && window.HFS.state && window.HFS.state.list) || [];
+        if (list.length === state.hfsListCount) return;
+        if (Date.now() - state.lastListRefreshAt < 1500) return;
+        refreshImageList();
+    }
+
+    async function refreshImageList() {
+        if (state.listFetching) return;
+        const folderUri = state.listFetchedFor;
+        if (!folderUri) return;
+        state.lastListRefreshAt = Date.now();
+        const keepName = state.lastKnownName;
+        state.listFetchedFor = '';
+        await fetchImageList(folderUri);
+        if (!mounted || !state.stripEl) return;
+        const total = state.images.length;
+        if (!total) {
+            // 資料夾已經沒有圖片了 → 收掉縮圖條
+            unmount();
+            return;
+        }
+
+        let idx = -1;
+        if (keepName) idx = state.images.findIndex(i => i.name === keepName);
+        if (idx < 0) idx = findCurrentIndex();
+        if (idx < 0) idx = Math.max(0, Math.min(state.currentIndex, total - 1));
+
+        state.currentIndex = idx;
+        state.lastRenderIndex = -1;
+        // 以目前的圖為中心重建視窗，索引位移才不會錯位
+        const R = WINDOW_CFG.INITIAL_RADIUS;
+        state.winStart = Math.max(0, idx - R);
+        state.winEnd = Math.min(total - 1, idx + R);
+        rebuildTrackDOM();
+        if (state.counterEl) state.counterEl.textContent = `${idx + 1} / ${total}`;
+        updateFileInfo(idx);
+        centerOnIndex(idx, false);
+        resyncPreviewForDomChange(idx);
     }
 
     function findCurrentIndex() {
@@ -3392,6 +3476,8 @@
         if (mounted && state.stripEl && stripInThisViewer === state.stripEl) {
             healThumbnails();
             const idx = findCurrentIndex();
+            // HFS 自己換圖（刪除跳下一張）時，舊預覽層要交棒，否則主圖一直被藏住
+            if (idx >= 0) resyncPreviewForDomChange(idx);
             if (idx >= 0 && idx !== state.currentIndex) updateActive(idx, true);
             else centerOnIndex(state.currentIndex, true);
             bindZoomDrag();
@@ -3861,6 +3947,10 @@
                             if (Date.now() - state.mountedAt > BUILTIN.coldStartMs) {
                                 if (mounted && state.stripEl && viewer.querySelector('.ib-strip-container') === state.stripEl) {
                                     const idx = findCurrentIndex();
+                                    // HFS 自己換了圖（刪除後跳下一張、改名、外部變動）：
+                                    // 舊的漸進預覽可能還綁在同一個 <img> 上，
+                                    // 不交棒的話新圖會一直被藏住 → 主界面看起來沒切換
+                                    resyncPreviewForDomChange(idx);
                                     if (idx >= 0 && idx !== state.currentIndex) {
                                         updateActive(idx, false);
                                     } else if (idx >= 0) {
@@ -3921,6 +4011,8 @@
                     setTimeout(healThumbnails, 500);
                 }
             }
+            // 刪除／新增後 HFS 清單長度會變 → 重抓圖片清單並重新對位
+            checkListChanged();
         }, 250);
         schedule();
     }
@@ -3965,6 +4057,9 @@
         requestOriginalForZoom,
         // 把面板上的縮圖設定（pixels / quality / regenerateBefore）套到 thumbnails 外掛
         syncThumbnailSettings,
+        // 刪除／新增後重新抓圖片清單並重新對位
+        refreshImageList,
+        resyncPreviewForDomChange,
         resetDetect: () => { state.nextButtonSide = 'right'; state.jumpMode = null; },
         refresh: () => { state.listFetchedFor = ''; schedule(); },
     };
