@@ -21,6 +21,39 @@
 }
 
 /* ============================================================
+   Viewer backdrop: opaque solid colour (performance)
+   ------------------------------------------------------------
+   #root .file-show used to be rgba(136,136,136,.933) (HFS) and the
+   Orange theme makes .showing-container rgba(0,0,0,.8) → the whole
+   screen was blended every frame. Both are solid here, so the
+   compositor can skip blending the viewer completely.
+
+   The colour follows the active theme: --deepprevew exists in the
+   Orange theme (light #dbdbdb, dark #000); without it we derive a
+   neutral tone from --bg / --text, which follows light / dark on its
+   own (light → near white, dark → near black).
+   ============================================================ */
+body #root .dialog-backdrop.file-show,
+body #root .file-show .showing-container {
+    background: var(--deepprevew, #d9d9d9) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+/* 深色模式（主題沒定義 --deepprevew 時的固定深色後備） */
+body.theme-dark #root .dialog-backdrop.file-show,
+body.theme-dark #root .file-show .showing-container {
+    background: var(--deepprevew, #101010) !important;
+}
+
+@supports (background: color-mix(in srgb, #fff 50%, #000)) {
+    body #root .dialog-backdrop.file-show,
+    body #root .file-show .showing-container {
+        background: var(--deepprevew, color-mix(in srgb, var(--bg, #fff) 88%, var(--text, #555) 12%)) !important;
+    }
+}
+
+/* ============================================================
    Strip container
    ============================================================ */
 .ib-strip-container {
@@ -30,7 +63,8 @@
     height: calc(var(--ib-thumb-h) + 42px);
     min-height: calc(var(--ib-thumb-h) + 40px);
     flex: 0 0 auto;
-    background: rgba(0, 0, 0, 0.95);
+    /* 不透明實色（原本 rgba(0,0,0,.95)）→ 拖曳時不必每幀跟背板混色 */
+    background: #000;
     overflow: hidden;
     position: relative;
     border-top: 1px solid rgba(255, 255, 255, 0.1);
