@@ -643,6 +643,8 @@
             if (previewBoundShowing === showing) clearProgressivePreview();
             // 最後由「唯一出口」決定是否讓主圖現身
             revealShowingIfIdle();
+            // 原圖就緒 → Ⓡ/Ⓐ/Ⓟ 立刻顯示（不必再點一次）
+            updateFileInfoResFromShowing(showing);
         };
 
         if (mainLoadCleanup) {
@@ -900,6 +902,9 @@
             canvasState.naturalH = sh;
             canvasState.srcUrl = effUrl;
             canvasState.pendingSrc = '';
+
+            // canvas 用原始解碼尺寸（不是可能被縮過的 sw/sh）更新資訊列
+            recordResolution(cur, nw, nh);
 
             canvasState.active = true;
             if (canvasState.el) canvasState.el.style.display = 'block';
@@ -2306,6 +2311,21 @@
         return meta;
     }
 
+    // 記住某張圖的原圖尺寸；若它就是目前這張，立刻刷新資訊列
+    // （Ⓡ/Ⓐ/Ⓟ 不必等使用者再點一次才出現）
+    function recordResolution(img, w, h) {
+        if (!img || !img.url || !w || !h) return;
+        const meta = state.metaCache.get(img.url) || {};
+        const prev = meta.res;
+        meta.res = { w, h, ratio: formatAspectRatio(w, h), mp: (w * h) / 1e6 };
+        state.metaCache.set(img.url, meta);
+        const changed = !prev || prev.w !== w || prev.h !== h;
+        const cur = state.images[state.currentIndex];
+        if (changed && cur && cur.url === img.url && state.fileInfoEl) {
+            updateFileInfo(state.currentIndex);
+        }
+    }
+
     function updateFileInfoResFromShowing(showing) {
         if (!state.fileInfoEl) return;
         if (!showing || !showing.naturalWidth || !showing.naturalHeight) return;
@@ -2313,18 +2333,44 @@
         if (idx < 0) return;
         const img = state.images[idx];
         if (!img) return;
-        const meta = state.metaCache.get(img.url) || {};
-        const w = showing.naturalWidth;
-        const h = showing.naturalHeight;
-        const res = {
-            w,
-            h,
-            ratio: formatAspectRatio(w, h),
-            mp: (w * h) / 1e6,
-        };
-        meta.res = res;
-        state.metaCache.set(img.url, meta);
-        updateFileInfo(idx);
+        const src = showing.getAttribute('src') || '';
+        if (!src || src.startsWith('data:') || src.startsWith('blob:')) return;
+        // 用「實際載入的 URL」比對：tif/bmp/psd 會是 ?convert=… 的版本
+        if (normalizeUrl(src) !== normalizeUrl(getEffectiveImageUrl(img))) return;
+        recordResolution(img, showing.naturalWidth, showing.naturalHeight);
+    }
+
+    // ============================================================
+    // 影像尺寸：先問後端（只讀檔頭），原圖還沒下載也能先顯示 Ⓡ/Ⓐ/Ⓟ
+    // ============================================================
+    const sizeRequests = new Map();
+
+    function fetchImageSize(img) {
+        if (!img || !img.url) return Promise.resolve(null);
+        if (sizeRequests.has(img.url)) return sizeRequests.get(img.url);
+        const url = img.url + (img.url.includes('?') ? '&' : '?') + 'ib_meta=1';
+        const p = fetch(url, {
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json' },
+            cache: 'no-store',
+        })
+            .then(r => (r.ok ? r.json() : null))
+            .then(d => {
+                const w = Math.round(Number(d && d.w));
+                const h = Math.round(Number(d && d.h));
+                if (!w || !h) return null;
+                const meta = state.metaCache.get(img.url) || {};
+                const res = { w, h, ratio: formatAspectRatio(w, h), mp: (w * h) / 1e6 };
+                meta.res = res;
+                state.metaCache.set(img.url, meta);
+                return res;
+            })
+            .catch(() => null)
+            .finally(() => {
+                sizeRequests.delete(img.url);
+            });
+        sizeRequests.set(img.url, p);
+        return p;
     }
 
     function resolveResolution(img, meta) {
@@ -2334,7 +2380,7 @@
 
             const showing = getMainImage();
             if (showing && showing.complete && showing.naturalWidth > 0 &&
-                normalizeUrl(showing.getAttribute('src') || '') === normalizeUrl(img.url)) {
+                normalizeUrl(showing.getAttribute('src') || '') === normalizeUrl(getEffectiveImageUrl(img))) {
                 const w = showing.naturalWidth;
                 const h = showing.naturalHeight;
                 const res = {
@@ -2349,7 +2395,8 @@
                 return;
             }
 
-            resolve(null);
+            // 原圖還沒載入：問後端能不能只讀檔頭就得到尺寸
+            fetchImageSize(img).then(r => resolve(r || null));
         });
     }
 
@@ -2365,9 +2412,12 @@
             const sizeText = (meta && meta.size != null) ? formatBytes(meta.size) : '—';
             const cText = (meta && meta.ctime) ? formatDate(meta.ctime) : '—';
             const mText = (meta && meta.mtime) ? formatDate(meta.mtime) : '—';
-            const resText = (res && res.w && res.h) ? `${res.w}×${res.h}` : '—';
-            const ratioText = (res && res.ratio) ? res.ratio : '—';
-            const mpText = formatMegapixels(res && res.mp) || '—';
+            const known = !!(res && res.w && res.h);
+            const resText = known ? `${res.w}×${res.h}` : '—';
+            const ratioText = (known && res.ratio) ? res.ratio : '—';
+            const mpText = known ? (formatMegapixels(res.mp) || '—') : '—';
+            // Ⓡ/Ⓐ/Ⓟ 還沒取得 → 淡化（.ib-meta-unknown），載入完成後恢復正常色
+            const resCls = 'ib-meta ib-meta-res' + (known ? '' : ' ib-meta-unknown');
             state.fileInfoEl.innerHTML =
                 `<span class="ib-meta">Ⓢ\uFE0E ${sizeText}</span>` +
                 `<span class="ib-meta-gap"></span>` +
@@ -2375,11 +2425,11 @@
                 `<span class="ib-meta-gap"></span>` +
                 `<span class="ib-meta">Ⓜ\uFE0E ${mText}</span>` +
                 `<span class="ib-meta-gap ib-meta-gap-res"></span>` +
-                `<span class="ib-meta ib-meta-res">Ⓡ\uFE0E ${resText}</span>` +
+                `<span class="${resCls}">Ⓡ\uFE0E ${resText}</span>` +
                 `<span class="ib-meta-gap ib-meta-gap-res"></span>` +
-                `<span class="ib-meta ib-meta-res">Ⓐ\uFE0E ${ratioText}</span>` +
+                `<span class="${resCls}">Ⓐ\uFE0E ${ratioText}</span>` +
                 `<span class="ib-meta-gap ib-meta-gap-res"></span>` +
-                `<span class="ib-meta ib-meta-res">Ⓟ\uFE0E ${mpText}</span>`;
+                `<span class="${resCls}">Ⓟ\uFE0E ${mpText}</span>`;
             state.fileInfoEl.title =
                 img.name + '\n' +
                 `Size: ${sizeText}\n` +
@@ -2407,6 +2457,33 @@
                     if (state.images[state.currentIndex] === img) apply(meta, r);
                 });
             }).catch(() => { });
+        }
+        // 原圖一載入完成就補上尺寸（不必再點一次滑鼠）
+        watchShowingForResolution(img);
+    }
+
+    // 原圖載入完成 → 立刻補上 Ⓡ/Ⓐ/Ⓟ。
+    // 同一個 <img> 可能先載入縮圖、之後才換成原圖，所以每次 load 都
+    // 用「src 是否等於這張的原圖 URL」判斷，符合才記錄。
+    function watchShowingForResolution(img) {
+        if (!img || !state.fileInfoEl) return;
+        const showing = getMainImage();
+        if (!showing) return;
+        const want = normalizeUrl(getEffectiveImageUrl(img));
+        const check = () => {
+            const s = showing.getAttribute('src') || '';
+            if (!s || s.startsWith('data:') || s.startsWith('blob:')) return;
+            if (!showing.complete || !showing.naturalWidth) return;
+            if (normalizeUrl(s) !== want) return;
+            recordResolution(img, showing.naturalWidth, showing.naturalHeight);
+        };
+        check();
+        if (showing.__ibInfoCheck !== check) {
+            if (showing.__ibInfoCheck) {
+                try { showing.removeEventListener('load', showing.__ibInfoCheck); } catch (e) { }
+            }
+            showing.__ibInfoCheck = check;
+            try { showing.addEventListener('load', check); } catch (e) { }
         }
     }
 

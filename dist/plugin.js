@@ -1,11 +1,12 @@
-exports.version = 7.9;
-exports.apiRequired = 10.0;
+exports.version = 8.0;
+exports.apiRequired = 10.1;
 exports.repo = "hugo529100/hfs-Image-browser";
 exports.description = "High-efficiency Picasa-style image browser with thumbnail strip, progressive preview, and smart deferred loading.";
 exports.depend = [{ "repo": "rejetto/thumbnails", "version": 4 }]
 exports.frontend_js = ['main.js', 'fileshow-help-image.js'];
 exports.frontend_css = ['style.css'];
 exports.changelog = [
+    { version: 8.0, message: "Resolution / aspect / megapixels in the file-info bar: (1) they now update the moment the original image finishes loading - previously the info was only recomputed on the next click; (2) while the original is not loaded the plugin asks the backend for the size - a new ?ib_meta=1 endpoint reads only the first 256 KB of the file header (jpg/png/gif/webp/bmp/tif/psd, cached per path+size+mtime), so the values appear immediately even in thumbnail mode; (3) until they are known the three fields render dimmed (.ib-meta-unknown) and switch back to the normal colour once known. The canvas path records the decoded dimensions too, and the comparison now uses the effective URL so ?convert= formats (tif/bmp/psd) work." },
     { version: 7.9, message: "Viewer backdrop is now an opaque solid colour that follows the active theme's light/dark palette. HFS painted .file-show as rgba(136,136,136,.933) and the Orange theme paints the showing container as rgba(0,0,0,.8), so the whole screen was blended every frame. The plugin now paints both with the theme's own --deepprevew (light #dbdbdb, dark #000) and, when that variable is missing, derives a neutral tone from --bg / --text (near-white in light mode, near-black in dark mode), with a fixed fallback for older browsers. backdrop-filter stays off and the thumbnail strip is solid black instead of 95% black." },
     { version: 7.8, message: "Delete-then-advance fix: after deleting an image HFS switches the <img class=showing> to the next file, but the previous progressive-preview layer was still bound to that same <img> with the deleted image as its target, so its finalize never matched the new image and the main area kept showing the old one. The plugin now hands the preview over whenever HFS changes the image itself (new src detected in the DOM): stale previews are cleared and the new image gets its own thumbnail, or is revealed directly when already loaded. It also notices that HFS's folder list changed (deletion/addition), re-fetches the image list, re-resolves the current index from the displayed file name and rebuilds the strip, so the dead thumbnail no longer lingers and indices stay aligned." },
     { version: 7.7, message: "Config wording: dropped the Chinese word from the thumbnail settings' helper texts. They now simply read 'Recommended: pixels 600~800' and 'Recommended: quality 80~95', and the note under them says 'Recommended: pixels 600~800, quality 80~95'." },
@@ -213,6 +214,7 @@ exports.configDialog = {
 };
 
 exports.changelog = [
+    { version: 8.0, message: "Resolution / aspect / megapixels in the file-info bar: (1) they now update the moment the original image finishes loading - previously the info was only recomputed on the next click; (2) while the original is not loaded the plugin asks the backend for the size - a new ?ib_meta=1 endpoint reads only the first 256 KB of the file header (jpg/png/gif/webp/bmp/tif/psd, cached per path+size+mtime), so the values appear immediately even in thumbnail mode; (3) until they are known the three fields render dimmed (.ib-meta-unknown) and switch back to the normal colour once known. The canvas path records the decoded dimensions too, and the comparison now uses the effective URL so ?convert= formats (tif/bmp/psd) work." },
     { version: 7.9, message: "Viewer backdrop is now an opaque solid colour that follows the active theme's light/dark palette. HFS painted .file-show as rgba(136,136,136,.933) and the Orange theme paints the showing container as rgba(0,0,0,.8), so the whole screen was blended every frame. The plugin now paints both with the theme's own --deepprevew (light #dbdbdb, dark #000) and, when that variable is missing, derives a neutral tone from --bg / --text (near-white in light mode, near-black in dark mode), with a fixed fallback for older browsers. backdrop-filter stays off and the thumbnail strip is solid black instead of 95% black." },
     { version: 7.8, message: "Delete-then-advance fix: after deleting an image HFS switches the <img class=showing> to the next file, but the previous progressive-preview layer was still bound to that same <img> with the deleted image as its target, so its finalize never matched the new image and the main area kept showing the old one. The plugin now hands the preview over whenever HFS changes the image itself (new src detected in the DOM): stale previews are cleared and the new image gets its own thumbnail, or is revealed directly when already loaded. It also notices that HFS's folder list changed (deletion/addition), re-fetches the image list, re-resolves the current index from the displayed file name and rebuilds the strip, so the dead thumbnail no longer lingers and indices stay aligned." },
     { version: 7.7, message: "Config wording: dropped the Chinese word from the thumbnail settings' helper texts. They now simply read 'Recommended: pixels 600~800' and 'Recommended: quality 80~95', and the note under them says 'Recommended: pixels 600~800, quality 80~95'." },
@@ -271,6 +273,137 @@ exports.init = api => {
         const s = String(p || '');
         const name = s.slice(s.lastIndexOf('/') + 1);
         try { return decodeURIComponent(name); } catch (e) { return name; }
+    }
+
+    // ============================================================
+    // 影像尺寸查詢：只讀檔頭，不串流整個檔案
+    //
+    // 前端在「原圖還沒載入」時就想要 Ⓡ/Ⓐ/Ⓟ（解析度／比例／百萬像素）。
+    // 這裡直接讀檔頭（最多 256 KB）解析尺寸，I/O 極小、也不必把原圖
+    // 下載到瀏覽器。支援 jpg / png / gif / webp / bmp / tif / psd。
+    // 用法：GET <檔案路徑>?ib_meta=1 → {"w":4072,"h":2280}（失敗回 {}）
+    // ============================================================
+    const META_HEAD_BYTES = 256 * 1024;
+    const META_CACHE_MAX = 800;
+    const metaCache = new Map();
+
+    function jpegSize(buf) {
+        let off = 2;                                    // skip SOI (FFD8)
+        while (off + 4 < buf.length) {
+            if (buf[off] !== 0xFF) { off++; continue; }
+            const m = buf[off + 1];
+            if (m === 0xFF) { off++; continue; }        // fill byte
+            if (m === 0x01 || m === 0xD8 || (m >= 0xD0 && m <= 0xD7)) { off += 2; continue; }
+            if (off + 4 > buf.length) return null;
+            const len = buf.readUInt16BE(off + 2);
+            const isSOF = m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC;
+            if (isSOF) {
+                if (off + 9 > buf.length) return null;
+                return { h: buf.readUInt16BE(off + 5), w: buf.readUInt16BE(off + 7) };
+            }
+            if (len < 2) return null;
+            off += 2 + len;
+        }
+        return null;
+    }
+
+    function webpSize(buf) {
+        if (buf.length < 30) return null;
+        if (buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WEBP') return null;
+        const type = buf.toString('ascii', 12, 16);
+        if (type === 'VP8 ') {
+            return {
+                w: buf.readUInt16LE(26) & 0x3fff,
+                h: buf.readUInt16LE(28) & 0x3fff,
+            };
+        }
+        if (type === 'VP8L' && buf.length >= 25) {
+            const bits = buf.readUInt32LE(21);
+            return {
+                w: (bits & 0x3fff) + 1,
+                h: ((bits >> 14) & 0x3fff) + 1,
+            };
+        }
+        if (type === 'VP8X' && buf.length >= 30) {
+            return {
+                w: buf.readUIntLE(24, 3) + 1,
+                h: buf.readUIntLE(27, 3) + 1,
+            };
+        }
+        return null;
+    }
+
+    function tiffSize(buf) {
+        if (buf.length < 8) return null;
+        const le = buf.toString('ascii', 0, 2) === 'II';
+        const u16 = o => (le ? buf.readUInt16LE(o) : buf.readUInt16BE(o));
+        const u32 = o => (le ? buf.readUInt32LE(o) : buf.readUInt32BE(o));
+        if (u16(2) !== 42) return null;
+        const ifd = u32(4);
+        if (ifd + 2 > buf.length) return null;
+        const n = u16(ifd);
+        let w = 0, h = 0;
+        for (let i = 0; i < n; i++) {
+            const e = ifd + 2 + i * 12;
+            if (e + 12 > buf.length) break;
+            const tag = u16(e);
+            if (tag !== 256 && tag !== 257) continue;
+            const type = u16(e + 2);
+            let val = 0;
+            if (type === 3) val = u16(e + 8);
+            else if (type === 4) val = u32(e + 8);
+            else continue;
+            if (tag === 256) w = val; else h = val;
+        }
+        return (w && h) ? { w, h } : null;
+    }
+
+    function parseImageSize(ext, buf) {
+        try {
+            if (!buf || buf.length < 16) return null;
+            if (ext === '.jpg' || ext === '.jpeg') return jpegSize(buf);
+            if (ext === '.png') return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+            if (ext === '.gif') return { w: buf.readUInt16LE(6), h: buf.readUInt16LE(8) };
+            if (ext === '.webp') return webpSize(buf);
+            if (ext === '.bmp' && buf.length >= 26) {
+                return { w: buf.readInt32LE(18), h: Math.abs(buf.readInt32LE(22)) };
+            }
+            if (ext === '.tif' || ext === '.tiff') return tiffSize(buf);
+            if (ext === '.psd' && buf.length >= 22) {
+                return { w: buf.readUInt32BE(18), h: buf.readUInt32BE(14) };
+            }
+        } catch (e) { }
+        return null;
+    }
+
+    async function readImageSize(ctx) {
+        const src = ctx.state && ctx.state.fileSource;
+        if (!src) return null;
+        const ext = extOf(ctx.path || '');
+        const stats = (ctx.state && ctx.state.fileStats) || null;
+        const key = String(src) + '|' + (stats ? (stats.size + '|' + stats.mtimeMs) : '');
+        if (metaCache.has(key)) return metaCache.get(key);
+
+        let res = null;
+        try {
+            const fs = api.require('fs');
+            const fh = await fs.promises.open(src, 'r');
+            try {
+                const size = (stats && stats.size) ? stats.size : (await fh.stat()).size;
+                const want = Math.max(16, Math.min(Number(size) || META_HEAD_BYTES, META_HEAD_BYTES));
+                const buf = Buffer.alloc(want);
+                await fh.read(buf, 0, want, 0);
+                res = parseImageSize(ext, buf);
+            } finally {
+                try { await fh.close(); } catch (e) { }
+            }
+        } catch (e) {
+            res = null;
+        }
+        if (res && !(res.w > 0 && res.h > 0 && res.w < 200000 && res.h < 200000)) res = null;
+        if (metaCache.size >= META_CACHE_MAX) metaCache.clear();
+        metaCache.set(key, res);
+        return res;
     }
 
     // ============================================================
@@ -333,6 +466,22 @@ exports.init = api => {
             try {
                 const path = ctx.path || '';
                 const ext = extOf(path);
+
+                // 影像尺寸查詢（?ib_meta=1）：只讀檔頭，取代原本的下載整張圖
+                if (ctx.query && ctx.query.ib_meta !== undefined) {
+                    const size = await readImageSize(ctx);
+                    if (ctx.body && typeof ctx.body.destroy === 'function') {
+                        try { ctx.body.destroy(); } catch (e) { }
+                    }
+                    try { ctx.state.dontLog = true; } catch (e) { }
+                    const json = JSON.stringify(size || {});
+                    ctx.status = 200;
+                    ctx.type = 'application/json; charset=utf-8';
+                    ctx.set('Cache-Control', 'no-store');
+                    ctx.set('Content-Length', String(Buffer.byteLength(json)));
+                    ctx.body = json;
+                    return ctx.stop();
+                }
 
                 if (IMG_EXTS.includes(ext)) {
                     ctx.set('X-Image-Viewer', '1');

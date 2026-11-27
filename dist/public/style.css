@@ -293,6 +293,20 @@ body.theme-dark #root .file-show .showing-container {
     margin-right: auto;
 }
 
+/* 原圖尺寸還沒拿到（Ⓡ/Ⓐ/Ⓟ）→ 先淡化；
+   載入原圖（或後端只讀檔頭取得尺寸）後會移除 .ib-meta-unknown，恢復正常顏色。
+   註：資訊列在黑色縮圖條上，深色模式的 --faint-contrast(#2d2d2d) 幾乎看不見，
+       所以深色模式改用 --mild-contrast。 */
+.ib-file-info .ib-meta.ib-meta-unknown {
+    color: var(--faint-contrast, rgba(255, 255, 255, 0.35));
+    opacity: 0.5;
+}
+
+body.theme-dark .ib-file-info .ib-meta.ib-meta-unknown {
+    color: var(--mild-contrast, #aaa);
+    opacity: 0.5;
+}
+
 .ib-file-info .ib-meta {
     display: inline-block;
 }
